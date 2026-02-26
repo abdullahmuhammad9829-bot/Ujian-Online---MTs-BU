@@ -4314,6 +4314,9 @@ function renderResults(container, selectedExamId = null) {
                 </div>
 
                 <div class="flex items-center gap-2">
+                  <button id="btn-back-to-cards" onclick="document.getElementById('select-result-exam').value=''; loadResultsTable('');" class="hidden bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2.5 rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-2 border border-slate-200" title="Kembali ke Daftar Kelas">
+                      <i class="fas fa-arrow-left"></i> <span class="hidden sm:inline">Kembali</span>
+                  </button>
                   <button id="btn-excel-recap" onclick="downloadResultsAsExcel()" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-emerald-500/30 transition flex items-center gap-2 transform active:scale-95">
                       <i class="fas fa-file-excel"></i> <span class="hidden sm:inline">Download Rekap Excel</span>
                   </button>
@@ -4374,20 +4377,170 @@ function renderResults(container, selectedExamId = null) {
         </div>
 
         <div id="res-empty-state" class="w-full">
-           <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-16 text-center w-full">
-               <div class="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 border border-slate-100">
-                   <i class="fas fa-chart-bar text-3xl text-slate-300"></i>
-               </div>
-               <h3 class="text-slate-600 font-bold">Menunggu Data</h3>
-               <p class="text-slate-400 text-sm mt-1">Silakan pilih mata pelajaran di atas.</p>
+            <div id="result-cards-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full fade-in"></div>
         </div>
     </div>`;
 
   // Helper: Jika ada selectedExamId, otomatis load
   if (selectedExamId) {
       setTimeout(() => loadResultsTable(selectedExamId), 500);
+      setTimeout(() => {
+          const select = document.getElementById('select-result-exam');
+          if (select) select.value = selectedExamId;
+      }, 550);
+  } else {
+      setTimeout(() => renderResultCards(), 300);
   }
 }
+
+window.renderResultCards = () => {
+    const container = document.getElementById('result-cards-container');
+    if(!container) return;
+
+    container.innerHTML = `
+        <div class="col-span-full bg-white rounded-xl border border-slate-200 shadow-sm p-16 flex flex-col items-center justify-center animate-pulse w-full">
+             <div class="w-12 h-12 bg-slate-200 rounded-full mb-3"></div>
+             <div class="h-4 bg-slate-200 rounded w-48 mb-2"></div>
+             <div class="h-3 bg-slate-100 rounded w-32"></div>
+        </div>`;
+
+    database.ref('Responses').once('value').then(snap => {
+        const studentCounts = {};
+        snap.forEach(child => {
+            const r = child.val();
+            if(r.ExamID) {
+                studentCounts[r.ExamID] = (studentCounts[r.ExamID] || 0) + 1;
+            }
+        });
+
+        let activeExams = cachedExams.filter(e => studentCounts[e.id] > 0);
+
+        // --- FILTER ROLE ---
+        if (currentUser && currentUser.role === 'Guru') {
+            const assignments = String(currentUser.class || '').split(',').map(a => a.trim());
+            const teacherSubjects = assignments.map(a => {
+                const parts = a.split(':');
+                return parts[0] ? parts[0].trim().toLowerCase() : '';
+            }).filter(Boolean);
+
+            activeExams = activeExams.filter(e => {
+                const examSubj = e.subject ? e.subject.toLowerCase().trim() : '';
+                return teacherSubjects.includes(examSubj);
+            });
+        }
+
+        if(activeExams.length === 0) {
+            let emptyMessage = 'Belum ada siswa yang mengerjakan ujian.';
+            if (currentUser && currentUser.role === 'Guru') {
+                emptyMessage = 'Belum ada nilai siswa untuk mata pelajaran yang Anda ampu.';
+            }
+            container.innerHTML = `
+              <div class="col-span-full bg-white rounded-xl border border-slate-200 shadow-sm p-16 text-center w-full fade-in">
+                  <div class="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 border border-slate-100">
+                      <i class="fas fa-poll-h text-3xl text-slate-300"></i>
+                  </div>
+                  <h3 class="text-lg font-bold text-slate-600">Belum Ada Hasil Ujian</h3>
+                  <p class="text-sm text-slate-400 mt-1 max-w-xs mx-auto">${emptyMessage}</p>
+              </div>`;
+            return;
+        }
+
+        let cardsHtml = '';
+        const colorClasses = [
+            ['blue', 'border-blue-500', 'bg-blue-100', 'text-blue-800', 'ring-blue-400'],
+            ['emerald', 'border-emerald-500', 'bg-emerald-100', 'text-emerald-800', 'ring-emerald-400'],
+            ['purple', 'border-purple-500', 'bg-purple-100', 'text-purple-800', 'ring-purple-400'],
+            ['orange', 'border-orange-500', 'bg-orange-100', 'text-orange-800', 'ring-orange-400'],
+            ['pink', 'border-pink-500', 'bg-pink-100', 'text-pink-800', 'ring-pink-400'],
+            ['rose', 'border-rose-500', 'bg-rose-100', 'text-rose-800', 'ring-rose-400'],
+            ['indigo', 'border-indigo-500', 'bg-indigo-100', 'text-indigo-800', 'ring-indigo-400']
+        ];
+
+        activeExams.forEach((exam, index) => {
+            const count = studentCounts[exam.id];
+            const colorSet = colorClasses[index % colorClasses.length];
+            const borderColor = colorSet[1];
+            const iconBg = colorSet[2];
+            const iconColor = colorSet[3];
+
+            let initial = (exam.subject || 'U').substring(0, 1).toUpperCase();
+
+            cardsHtml += `
+                <div class="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-300 overflow-hidden group cursor-pointer relative flex flex-col h-full" onclick="document.getElementById('select-result-exam').value='${exam.id}'; loadResultsTable('${exam.id}')">
+                    <button onclick="event.stopPropagation(); window.hapusRombonganHasil('${exam.id}', '${exam.subject || 'Ujian'}');" class="absolute top-3 right-3 w-8 h-8 bg-red-50 hover:bg-red-500 text-red-500 hover:text-white rounded-lg flex items-center justify-center transition opacity-0 group-hover:opacity-100 shadow-sm" title="Hapus Semua Nilai Mapel Ini">
+                        <i class="fas fa-trash-alt"></i>
+                    </button>
+                    <div class="h-2 w-full ${iconBg}"></div>
+                    <div class="p-5 flex-1 flex flex-col">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="w-14 h-14 rounded-2xl ${iconBg} ${iconColor} flex items-center justify-center text-2xl font-bold shadow-sm border ${borderColor} group-hover:scale-110 group-hover:rotate-3 transition duration-300">
+                                ${initial}
+                            </div>
+                        </div>
+                        <h4 class="font-bold text-slate-800 text-lg mb-1 group-hover:text-blue-600 transition truncate pr-2" title="${exam.subject || 'Ujian'}">${exam.subject || 'Ujian'}</h4>
+                        <div class="flex items-center gap-2 mb-4">
+                            <span class="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-xs font-semibold border border-slate-200 flex items-center gap-1">
+                                <i class="fas fa-users"></i> ${exam.class || '-'}
+                            </span>
+                        </div>
+                        <div class="mt-auto pt-4 border-t border-slate-100 flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total Hasil</span>
+                                <span class="font-black text-slate-700 text-base">${count} <span class="text-xs font-medium text-slate-400">Siswa</span></span>
+                            </div>
+                            <div class="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-blue-50 group-hover:text-blue-600 transition">
+                                <i class="fas fa-arrow-right"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+
+        container.innerHTML = cardsHtml;
+    });
+};
+
+window.hapusRombonganHasil = (examId, subjectName) => {
+    Swal.fire({
+        title: `Hapus Semua Nilai ${subjectName}?`,
+        text: 'Seluruh data jawaban siswa untuk ujian ini akan dihapus permanen dan tidak bisa dikembalikan!',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#ef4444',
+        cancelButtonColor: '#64748b',
+        confirmButtonText: 'Ya, Hapus Semua!',
+        cancelButtonText: 'Batal'
+    }).then((result) => {
+        if (result.isConfirmed) {
+            Swal.fire({
+                title: 'Menghapus Data...',
+                html: '<i class="fas fa-circle-notch fa-spin text-3xl text-red-500"></i>',
+                showConfirmButton: false,
+                allowOutsideClick: false
+            });
+
+            database.ref('Responses').orderByChild('ExamID').equalTo(examId).once('value').then(snap => {
+                if (!snap.exists()) {
+                    Swal.fire('Info', 'Tidak ada nilai yang ditemukan untuk dihapus.', 'info');
+                    return;
+                }
+                
+                const updates = {};
+                snap.forEach(child => {
+                    updates[child.key] = null;
+                });
+
+                return database.ref('Responses').update(updates);
+            }).then(() => {
+                Swal.fire('Berhasil', 'Seluruh data nilai mapel tersebut berhasil dihapus.', 'success');
+                window.renderResultCards(); // refresh grid
+            }).catch(err => {
+                Swal.fire('Error', 'Gagal menghapus data: ' + err.message, 'error');
+            });
+        }
+    });
+};
 
 function loadResultsTable(eid) {
   const wrapper = document.getElementById('res-table-wrapper');
@@ -4395,6 +4548,7 @@ function loadResultsTable(eid) {
   const container = document.getElementById('res-table-container');
   const btnPdf = document.getElementById('btn-pdf-recap');
   const btnExcel = document.getElementById('btn-excel-recap');
+  const btnBack = document.getElementById('btn-back-to-cards');
 
   // Jika dropdown dipilih ke "Pilih Mata Pelajaran" (kosong)
   if (!eid) {
@@ -4402,6 +4556,7 @@ function loadResultsTable(eid) {
     emptyState.classList.remove('hidden');
     if (btnPdf) btnPdf.classList.add('hidden');
     if (btnExcel) btnExcel.classList.add('hidden');
+    if (btnBack) btnBack.classList.add('hidden');
     return;
   }
 
@@ -4410,6 +4565,7 @@ function loadResultsTable(eid) {
   emptyState.classList.add('hidden');
   if (btnPdf) btnPdf.classList.remove('hidden');
   if (btnExcel) btnExcel.classList.remove('hidden');
+  if (btnBack) btnBack.classList.remove('hidden');
 
   // Tampilkan Loading State Manual
   container.innerHTML = `
