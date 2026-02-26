@@ -579,7 +579,7 @@
             </div>
             <div class="sidebar-header-text">
               <h1 id="admin-header-title" class="text-white font-bold text-lg tracking-tight">Ujian Online</h1>
-              <p class="text-xs text-slate-400">Admin Panel v2.0</p>
+              <p class="text-xs text-slate-400">MTs Bustanul Ulum</p>
             </div>
           </div>
         </div>
@@ -922,6 +922,7 @@ let questions = [];
 let answers = {};
 let currentQIndex = 0;
 let violationCount = 0;
+let checkpoints = {};
 let timerInterval;
 let selectedLeft = null;
 
@@ -1236,6 +1237,7 @@ function logout() {
       questions = [];
       answers = {};
       violationCount = 0;
+      checkpoints = {};
 
       // 5. === RESET TAMPILAN UJIAN ===
       if (initialExamHTML) {
@@ -2567,7 +2569,7 @@ function renderAdminHome(container) {
                    <i class="fas fa-info-circle text-blue-400"></i> Informasi Penting
                   </h3>
                   <p class="text-slate-400 text-xs mb-6 leading-relaxed border-b border-slate-700 pb-4">
-                      Refresh Data setelah melakukan perubahan manual pada Google Spreadsheet.
+                      Refresh Data setelah melakukan perubahan pada aplikasi.
                   </p>
                   
                   <div class="space-y-3">
@@ -2582,13 +2584,13 @@ function renderAdminHome(container) {
                           <i class="fab fa-google-drive text-green-400 mt-1"></i>
                           <div>
                               <strong class="block text-sm text-slate-200">Database</strong>
-                              <span class="text-[11px] text-slate-500">Terhubung ke Google Sheets.</span>
+                              <span class="text-[11px] text-slate-500">Terhubung ke Firebase Real-Time.</span>
                           </div>
                       </div>
                   </div>
               </div>
               <div class="bg-slate-950 p-3 text-center text-[10px] text-slate-600 font-mono">
-                  System v2.0 • Secure Connection
+                  Created by Operator Madrasah
               </div>
           </div>
        </div>
@@ -4011,7 +4013,7 @@ function handleAddQuestion(e) {
       Swal.fire({
         icon: 'error',
         title: 'Data Terlalu Besar',
-        text: `Ukuran opsi jawaban (${Math.round(jsonLength/1024)} KB) melebihi batas Google Sheets. Mohon gunakan gambar yang lebih kecil/sedikit pada pilihan jawaban.`
+        text: `Ukuran opsi jawaban (${Math.round(jsonLength/1024)} KB) melebihi batas. Mohon gunakan gambar yang lebih kecil/sedikit pada pilihan jawaban.`
       });
       return; // Batalkan proses
     }
@@ -5343,6 +5345,7 @@ function initStudentExam(examData) {
 
           questions = qs;
           if (savedAnswers) answers = savedAnswers;
+          checkpoints = {};
 
           renderNavGrid();
           renderQuestion(0);
@@ -5356,6 +5359,18 @@ function initStudentExam(examData) {
 
 function renderQuestion(index) {
   if (!questions || !questions[index]) return;
+
+  if (index > currentQIndex) {
+      for (let i = 0; i < index; i++) {
+          const isCp = ((i + 1) % 5 === 0) || (i === questions.length - 1);
+          if (isCp) {
+              if (!checkpoints[i] || checkpoints[i].status !== 'done') {
+                  Swal.fire('Akses Terkunci', `Anda harus menyelesaikan dan melewati Waktu Wajib Koreksi pada soal nomor ${i+1}.`, 'warning');
+                  return;
+              }
+          }
+      }
+  }
 
   currentQIndex = index;
   const q = questions[index];
@@ -5882,6 +5897,60 @@ function saveComplexBS(qid, index, val) {
              btn.className = `w-full aspect-square border rounded-lg flex items-center justify-center font-bold text-sm transition ${i===currentQIndex ? 'bg-yellow-100 border-yellow-400 ring-2 ring-yellow-300 text-yellow-800 scale-105 shadow' : (isAns ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50')}`;
          }
       });
+
+      if (typeof currentQIndex !== 'undefined' && questions.length > 0) {
+          const isCp = ((currentQIndex + 1) % 5 === 0) || (currentQIndex === questions.length - 1);
+          if (isCp) {
+              const q = questions[currentQIndex];
+              let isAns = answers[q.id];
+              if(typeof isAns === 'object') isAns = Object.keys(isAns).length > 0;
+              else if (typeof isAns === 'string') isAns = String(isAns).trim() !== '';
+
+              if (isAns && !checkpoints[currentQIndex]) {
+                  checkpoints[currentQIndex] = { status: 'running', remaining: 120, interval: null };
+                  
+                  const Toast = Swal.mixin({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000 });
+                  Toast.fire({ icon: 'info', title: 'Waktu Wajib Koreksi Dimulai!' });
+
+                  checkpoints[currentQIndex].interval = setInterval(() => {
+                      checkpoints[currentQIndex].remaining--;
+                      if (checkpoints[currentQIndex].remaining <= 0) {
+                          clearInterval(checkpoints[currentQIndex].interval);
+                          checkpoints[currentQIndex].status = 'done';
+                      }
+                      updateCheckpointUI();
+                  }, 1000);
+              }
+          }
+          updateCheckpointUI();
+      }
+    }
+
+    function updateCheckpointUI() {
+        const btnNext = document.getElementById('btn-next');
+        if (!btnNext || questions.length === 0) return;
+
+        const isCp = ((currentQIndex + 1) % 5 === 0) || (currentQIndex === questions.length - 1);
+        if (isCp && checkpoints[currentQIndex] && checkpoints[currentQIndex].status === 'running') {
+            const cp = checkpoints[currentQIndex];
+            btnNext.disabled = true;
+            btnNext.classList.add('opacity-50', 'cursor-not-allowed');
+            btnNext.classList.replace('bg-blue-600', 'bg-slate-500');
+            btnNext.classList.replace('hover:bg-blue-700', 'bg-slate-500');
+            btnNext.classList.replace('bg-emerald-600', 'bg-slate-500');
+            btnNext.classList.replace('hover:bg-emerald-700', 'bg-slate-500');
+            btnNext.innerHTML = `Waktu Koreksi (<span class="text-yellow-300 font-mono">${cp.remaining}s</span>) <i class="fas fa-lock ml-2"></i>`;
+        } else {
+            btnNext.disabled = false;
+            btnNext.classList.remove('opacity-50', 'cursor-not-allowed', 'bg-slate-500');
+            if (currentQIndex === questions.length - 1) {
+                btnNext.classList.add('bg-emerald-600', 'hover:bg-emerald-700');
+                btnNext.innerHTML = 'Selesai <i class="fas fa-flag-checkered ml-2"></i>';
+            } else {
+                btnNext.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                btnNext.innerHTML = 'Selanjutnya <i class="fas fa-arrow-right ml-2"></i>';
+            }
+        }
     }
 
     function prevQ() { if(currentQIndex > 0) renderQuestion(currentQIndex - 1); }
@@ -5903,6 +5972,19 @@ function saveComplexBS(qid, index, val) {
             }
         }
         // -------------------------------
+
+        const isCp = ((currentQIndex + 1) % 5 === 0) || (currentQIndex === questions.length - 1);
+        if (isCp) {
+            const cp = checkpoints[currentQIndex];
+            if (!cp || cp.status !== 'done') {
+                if (!cp) {
+                    Swal.fire('Perhatian', 'Anda harus menjawab soal ini terlebih dahulu untuk memulai Waktu Wajib Koreksi.', 'warning');
+                } else {
+                    Swal.fire('Waktu Tunggu', 'Silakan kembali memeriksa jawaban Anda dan tunggu hingga waktu koreksi selesai.', 'info');
+                }
+                return;
+            }
+        }
 
         if(currentQIndex < questions.length - 1) {
             renderQuestion(currentQIndex + 1);
@@ -6094,6 +6176,17 @@ function finishExamManual(forced = false, statusLabel = 'Completed') {
        // Langsung eksekusi submit tanpa validasi soal wajib
        executeSubmission(true, statusLabel); 
        return; 
+   }
+
+   // CHECKPOINT VALIDASI UNTUK SOAL TERAKHIR
+   if (questions.length > 0) {
+       const lastIdx = questions.length - 1;
+       const cp = checkpoints[lastIdx];
+       if (!cp || cp.status !== 'done') {
+           Swal.fire('Perhatian', 'Anda wajib menjawab soal terakhir dan menunggu Waktu Wajib Koreksi sebelum mengakhiri ujian.', 'warning');
+           renderQuestion(lastIdx);
+           return;
+       }
    }
 
    // 2. Validasi Soal Wajib (Hanya jika submit manual normal)
