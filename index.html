@@ -2061,7 +2061,7 @@ function renderNilaiPraktek(container) {
             <span class="text-xs text-slate-500">${students.length} siswa • ${visibleSubjects.length} mapel</span>
           </div>
           <div class="text-xs text-orange-600 font-semibold flex items-center gap-1">
-            <i class="fas fa-info-circle"></i> Klik "Save Nilai" untuk menyimpan
+            <i class="fas fa-info-circle"></i> Klik "Simpan Semua Nilai" untuk menyimpan
           </div>
         </div>
         <div class="overflow-auto" style="max-height: 70vh;">
@@ -5320,6 +5320,12 @@ function initStudentExam(examData) {
           qs.push(q);
         });
 
+        // 1. SHUFFLE QUESTIONS (Melakukan pengacakan urutan soal)
+        for (let i = qs.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [qs[i], qs[j]] = [qs[j], qs[i]];
+        }
+
         // Cek apakah ada jawaban tersimpan
         return database.ref('Responses').orderByChild('ExamID').equalTo(examData.id).once('value').then(rSnap => {
           let savedAnswers = null;
@@ -5413,24 +5419,38 @@ function renderQuestion(index) {
 
   // A. PILIHAN GANDA (PG)
   if (q.type === 'PG') {
-    q.options.forEach((optContent, idx) => {
-      const alphabet = String.fromCharCode(65 + idx);
-      const isChecked = savedAns === alphabet;
+    // 1. Map options ke object beserta nilai alphabet aslinya
+    let mappedOptions = q.options.map((optContent, idx) => ({
+        content: optContent,
+        realVal: String.fromCharCode(65 + idx)
+    }));
+
+    // 2. Shuffle array mappedOptions
+    for (let i = mappedOptions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [mappedOptions[i], mappedOptions[j]] = [mappedOptions[j], mappedOptions[i]];
+    }
+
+    // 3. Render array yang sudah di-shuffle
+    mappedOptions.forEach((opt, displayIdx) => {
+      const displayAlphabet = String.fromCharCode(65 + displayIdx); // Label tampilan urut A, B, C, D
+      const realVal = opt.realVal; // Nilai asli yang dikirim ke database
+      const isChecked = savedAns === realVal;
 
       const optionDiv = document.createElement('div');
       optionDiv.className = `option-label ${isChecked ? 'checked' : ''} py-3 px-4 flex items-center cursor-pointer border border-slate-200 rounded-lg hover:bg-slate-50 transition mb-2 group`;
 
       optionDiv.onclick = function() {
-        selectOption(q.id, alphabet, this);
+        selectOption(q.id, realVal, this);
       };
 
       optionDiv.innerHTML = `
           <div class="custom-radio w-5 h-5 mr-3 flex-shrink-0 border-2 border-slate-300 rounded-full group-hover:border-blue-400 transition"></div> 
           <div class="flex-1 min-w-0">
                <div class="flex items-start gap-2">
-                  <span class="font-bold text-slate-400 text-xs mt-0.5 select-none flex-shrink-0">${alphabet}.</span>
+                  <span class="font-bold text-slate-400 text-xs mt-0.5 select-none flex-shrink-0">${displayAlphabet}.</span>
                   <div class="text-slate-700 font-medium text-sm prose prose-sm max-w-none">
-                      ${optContent} 
+                      ${opt.content} 
                   </div>
                </div>
           </div>`;
@@ -5442,9 +5462,23 @@ function renderQuestion(index) {
   else if (q.type === 'PG_KOMPLEKS') {
     optionsWrapper.innerHTML += '<p class="text-xs font-bold text-blue-600 mb-2 flex items-center gap-1"><i class="fas fa-check-double"></i> Pilih satu atau lebih jawaban yang benar:</p>';
 
-    q.options.forEach((optContent, idx) => {
-      const alphabet = String.fromCharCode(65 + idx);
-      const isChecked = Array.isArray(savedAns) && savedAns.includes(alphabet);
+    // 1. Map options ke object beserta nilai alphabet aslinya
+    let mappedOptions = q.options.map((optContent, idx) => ({
+        content: optContent,
+        realVal: String.fromCharCode(65 + idx)
+    }));
+
+    // 2. Shuffle array mappedOptions
+    for (let i = mappedOptions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [mappedOptions[i], mappedOptions[j]] = [mappedOptions[j], mappedOptions[i]];
+    }
+
+    mappedOptions.forEach((opt, displayIdx) => {
+      const displayAlphabet = String.fromCharCode(65 + displayIdx); // A, B, C, D (tampilan)
+      const realVal = opt.realVal; // Nilai asli yang disimpan
+
+      const isChecked = Array.isArray(savedAns) && savedAns.includes(realVal);
 
       const boxClass = isChecked ? 'bg-blue-600 border-blue-600' : 'bg-white border-slate-300';
       const containerClass = isChecked ? 'checked ring-1 ring-blue-200 bg-blue-50/30' : 'bg-white hover:bg-slate-50';
@@ -5454,7 +5488,7 @@ function renderQuestion(index) {
       optionDiv.className = `option-label ${containerClass} py-3 px-4 cursor-pointer border border-slate-200 rounded-lg flex items-center transition-all duration-200 mb-2 group`;
 
       optionDiv.onclick = function() {
-        toggleComplexPG(q.id, alphabet, this);
+        toggleComplexPG(q.id, realVal, this);
       };
 
       optionDiv.innerHTML = `
@@ -5463,9 +5497,9 @@ function renderQuestion(index) {
           </div>
           <div class="flex-1 min-w-0">
                <div class="flex items-start gap-2">
-                  <span class="font-bold text-slate-400 text-xs mt-0.5 select-none flex-shrink-0">${alphabet}.</span>
+                  <span class="font-bold text-slate-400 text-xs mt-0.5 select-none flex-shrink-0">${displayAlphabet}.</span>
                   <div class="text-slate-700 font-medium text-sm prose prose-sm max-w-none">
-                      ${optContent}
+                      ${opt.content}
                   </div>
                </div>
           </div>`;
@@ -5494,9 +5528,25 @@ function renderQuestion(index) {
           </thead>
           <tbody class="divide-y divide-slate-100 bg-white">`;
 
-    q.options.forEach((stmt, idx) => {
-      const rowVal = savedAns[idx];
-      const rowClass = (idx % 2 === 0) ? 'bg-white' : 'bg-slate-50/50';
+    // 1. Map options ke object beserta original index-nya (agar saat disimpan bisa tetap sesuai DB)
+    let mappedBsOptions = q.options.map((stmt, idx) => ({
+        stmt: stmt,
+        originalIdx: idx
+    }));
+
+    // 2. Shuffle statement-nya
+    for (let i = mappedBsOptions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [mappedBsOptions[i], mappedBsOptions[j]] = [mappedBsOptions[j], mappedBsOptions[i]];
+    }
+
+    // 3. Render baris-baris sesuai hasil yang dishuffle
+    mappedBsOptions.forEach((item, displayIdx) => {
+      const originalIdx = item.originalIdx;
+      const stmt = item.stmt;
+
+      const rowVal = savedAns[originalIdx];
+      const rowClass = (displayIdx % 2 === 0) ? 'bg-white' : 'bg-slate-50/50';
 
       tableHTML += `
             <tr class="${rowClass} hover:bg-blue-50 transition duration-150">
@@ -5505,16 +5555,16 @@ function renderQuestion(index) {
               </td>
               <td class="px-2 py-3 text-center border-l border-slate-100 align-middle">
                 <label class="cursor-pointer flex justify-center items-center h-full w-full p-2">
-                  <input type="radio" name="bs_${q.id}_${idx}" 
-                         onchange="saveComplexBS('${q.id}', '${idx}', 'Benar')"
+                  <input type="radio" name="bs_${q.id}_${originalIdx}" 
+                         onchange="saveComplexBS('${q.id}', '${originalIdx}', 'Benar')"
                          ${rowVal === 'Benar' ? 'checked' : ''}
                          class="w-5 h-5 text-emerald-600 focus:ring-emerald-500 border-gray-300 cursor-pointer">
                 </label>
               </td>
               <td class="px-2 py-3 text-center border-l border-slate-100 align-middle">
                 <label class="cursor-pointer flex justify-center items-center h-full w-full p-2">
-                  <input type="radio" name="bs_${q.id}_${idx}" 
-                         onchange="saveComplexBS('${q.id}', '${idx}', 'Salah')"
+                  <input type="radio" name="bs_${q.id}_${originalIdx}" 
+                         onchange="saveComplexBS('${q.id}', '${originalIdx}', 'Salah')"
                          ${rowVal === 'Salah' ? 'checked' : ''}
                          class="w-5 h-5 text-red-600 focus:ring-red-500 border-gray-300 cursor-pointer">
                 </label>
@@ -5531,7 +5581,13 @@ function renderQuestion(index) {
   else if (q.type === 'JODOH') {
     const pairs = q.options;
     const lefts = pairs.map(p => p.q);
-    const rights = pairs.map(p => p.m || p.a);
+    let rights = pairs.map(p => p.m || p.a);
+
+    // Shuffle array rights agar pilihan jawaban diacak urutannya
+    for (let i = rights.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [rights[i], rights[j]] = [rights[j], rights[i]];
+    }
 
     const palettes = [
       ['emerald', 'border-emerald-500', 'bg-emerald-100', 'text-emerald-800', 'ring-emerald-400'],
