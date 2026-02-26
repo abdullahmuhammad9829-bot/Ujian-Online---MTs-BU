@@ -4314,7 +4314,7 @@ function renderResults(container, selectedExamId = null) {
                 </div>
 
                 <div class="flex items-center gap-2">
-                  <button id="btn-back-to-cards" onclick="document.getElementById('select-result-exam').value=''; loadResultsTable('');" class="hidden bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2.5 rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-2 border border-slate-200" title="Kembali ke Daftar Kelas">
+                  <button id="btn-back-to-cards" onclick="renderResultCards()" class="hidden bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2.5 rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-2 border border-slate-200" title="Kembali ke Daftar Kelas">
                       <i class="fas fa-arrow-left"></i> <span class="hidden sm:inline">Kembali</span>
                   </button>
                   <button id="btn-excel-recap" onclick="downloadResultsAsExcel()" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-emerald-500/30 transition flex items-center gap-2 transform active:scale-95">
@@ -4396,6 +4396,21 @@ function renderResults(container, selectedExamId = null) {
 window.renderResultCards = () => {
     const container = document.getElementById('result-cards-container');
     if(!container) return;
+
+    // Meniru logika Bank Soal: Reset komponen view tabel saat kembali
+    const wrapper = document.getElementById('res-table-wrapper');
+    const emptyState = document.getElementById('res-empty-state');
+    const btnPdf = document.getElementById('btn-pdf-recap');
+    const btnExcel = document.getElementById('btn-excel-recap');
+    const btnBack = document.getElementById('btn-back-to-cards');
+    const select = document.getElementById('select-result-exam');
+
+    if (select) select.value = '';
+    if (wrapper) wrapper.classList.add('hidden');
+    if (emptyState) emptyState.classList.remove('hidden');
+    if (btnPdf) btnPdf.classList.add('hidden');
+    if (btnExcel) btnExcel.classList.add('hidden');
+    if (btnBack) btnBack.classList.add('hidden');
 
     container.innerHTML = `
         <div class="col-span-full bg-white rounded-xl border border-slate-200 shadow-sm p-16 flex flex-col items-center justify-center animate-pulse w-full">
@@ -4766,19 +4781,223 @@ function downloadResultPDF() {
   const examId = document.getElementById('select-result-exam').value;
 
   if (!examId) {
-    Swal.fire('Peringatan', 'Silakan pilih Mata Pelajaran terlebih dahulu.', 'warning');
+    Swal.fire('Peringatan', 'Silakan pilih Mata Pelajaran terlebih dahulu agar sistem mengetahui kelas mana yang akan dicetak.', 'warning');
     return;
   }
+
+  // Get selected exam info to extract the target class
+  const selectedExam = cachedExams.find(e => String(e.id) === String(examId));
+  if (!selectedExam) return;
+
+  const targetClass = selectedExam.class;
 
   const btn = document.getElementById('btn-pdf-recap');
   const originalText = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Memproses...';
 
-  // PDF generation tidak tersedia di client-side Firebase
-  btn.disabled = false;
-  btn.innerHTML = originalText;
-  Swal.fire('Fitur Tidak Tersedia', 'Fitur PDF Rekap tidak tersedia dalam mode Firebase.', 'warning');
+  // Find all subjects/exams for this class
+  let classExams = cachedExams.filter(e => e.class === targetClass);
+
+  if (currentUser && currentUser.role === 'Guru') {
+    const assignments = String(currentUser.class || '').split(',').map(a => a.trim());
+    const teacherSubjects = assignments.map(a => {
+        const parts = a.split(':');
+        return parts[0] ? parts[0].trim().toLowerCase() : '';
+    }).filter(Boolean);
+
+    classExams = classExams.filter(e => {
+        const examSubj = e.subject ? e.subject.toLowerCase().trim() : '';
+        return teacherSubjects.some(ts => ts === examSubj);
+    });
+  }
+
+  if (classExams.length === 0) {
+      Swal.fire('Info', 'Tidak ada mata pelajaran ujian untuk kelas ini.', 'info');
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+      return;
+  }
+
+  // Sort exams/subjects for consistent columns
+  classExams.sort((a,b) => (a.subject || '').localeCompare(b.subject || ''));
+  const examIds = classExams.map(e => String(e.id));
+  const subjectNames = classExams.map(e => e.subject);
+
+  const ensureUsersLoaded = (typeof allUsersData !== 'undefined' && allUsersData && allUsersData.length > 0)
+    ? Promise.resolve()
+    : database.ref('Users').once('value').then(snap => {
+        const users = [];
+        snap.forEach(child => {
+          const raw = child.val();
+          users.push({
+            _key: child.key,
+            id: raw.UserID || raw.userId || raw.id || '',
+            username: raw.Username || raw.username || '',
+            role: raw.Role || raw.role || 'Siswa',
+            class: raw.Class || raw.class || raw.kelas || '',
+            password: raw.Password || raw.password || ''
+          });
+        });
+        allUsersData = users;
+      });
+
+  ensureUsersLoaded.then(() => {
+    const classStudents = allUsersData.filter(u => u.role === 'Siswa' && u.class === targetClass);
+
+    if (classStudents.length === 0) {
+        Swal.fire('Info', 'Tidak ada siswa yang terdaftar di kelas ini.', 'info');
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        return;
+    }
+
+    classStudents.sort((a,b) => (a.username || '').localeCompare(b.username || ''));
+
+    database.ref('Responses').once('value').then(snap => {
+      const studentResults = {};
+      classStudents.forEach(s => {
+          studentResults[s.id] = {};
+      });
+
+      snap.forEach(child => {
+         const resp = child.val();
+         // Only process if it belongs to one of the class exams and a valid class student
+         if (resp.ExamID && examIds.includes(String(resp.ExamID)) && studentResults[resp.UserID]) {
+             studentResults[resp.UserID][resp.ExamID] = {
+                 score: resp.Score || 0,
+                 status: resp.Status || '',
+                 submitTime: resp.SubmitTime || ''
+             };
+         }
+      });
+
+      const logoImg = document.getElementById('login-logo-img') || document.querySelector('.sidebar-logo') || document.querySelector('img[src*="logo"]');
+      const logoUrl = logoImg ? logoImg.src : 'https://via.placeholder.com/150';
+
+      let tableHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
+        <title>Rekap Hasil Ujian ${targetClass}</title>
+        <style>
+          @page { size: landscape; margin: 10mm; }
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; color: #1e293b; padding: 5mm; }
+          .header { text-align: center; margin-bottom: 25px; position: relative; }
+          .header .logo { position: absolute; left: 15px; top: 0; width: 85px; height: auto; }
+          .header h1 { font-size: 16px; font-weight: bold; margin-bottom: 3px; font-family: 'Times New Roman', Times, serif; }
+          .header h2 { font-size: 20px; font-weight: bold; margin-bottom: 3px; font-family: 'Times New Roman', Times, serif; }
+          .header p { font-size: 10px; color: #1e293b; margin-top: 2px; }
+          .header .small-text { font-size: 9px; font-weight: bold; }
+          .header-line { margin-top: 10px; margin-bottom: 2px; border: 0; border-top: 3px solid #000; display: block; }
+          .header-line-thin { border: 0; border-top: 1px solid #000; margin-bottom: 20px; display: block; }
+          .doc-title { text-align: center; margin-bottom: 15px; }
+          .doc-title h3 { font-size: 14px; text-decoration: underline; font-weight: bold; }
+          .doc-title p { font-size: 11px; margin-top: 3px; }
+          table { width: 100%; border-collapse: collapse; font-size: 10px; }
+          thead { display: table-header-group; }
+          tr { page-break-inside: avoid; }
+          th { background: #1e293b; color: white; border: 1px solid #475569; padding: 6px 5px; text-align: center; font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; }
+          td { border: 1px solid #cbd5e1; padding: 5px 6px; text-align: center; vertical-align: middle; }
+          td.nama { text-align: left; font-weight: 500; }
+          tr:nth-child(even) { background: #f8fafc; }
+          .footer { margin-top: 25px; display: flex; justify-content: flex-end; page-break-inside: avoid; }
+          .ttd { text-align: center; min-width: 180px; font-size: 10px; color: #475569; }
+          .ttd .line { border-top: 1px solid #1e293b; margin-top: 60px; padding-top: 3px; }
+        </style>
+      </head><body>
+        <div class="header">
+          <img src="${logoUrl}" class="logo" alt="Logo KOP Surat" crossorigin="anonymous">
+          <h1>YAYASAN BUSTANUL ULUM ROKAN HILIR</h1>
+          <h2>MADRASAH TSANAWIYAH BUSTANUL ULUM</h2>
+          <p class="small-text">KEC. BAGAN SINEMBAH RAYA KAB. ROKAN HILIR PROV. RIAU</p>
+          <p>Terakreditasi B</p>
+          <p class="small-text">AKTA NOTARIS 37/2016 &nbsp;&nbsp;|&nbsp;&nbsp; PIAGAM NO. Kd.04.8/3/pp.00.4/MTs/1225/2010</p>
+          <p class="small-text">IJOP : 59 Tahun 2010 &nbsp;&nbsp;|&nbsp;&nbsp; NSM : 121214070048 &nbsp;&nbsp;|&nbsp;&nbsp; NPSN : 10499236</p>
+          <p style="font-style: italic;">Alamat : Panca Mukti Kec. Bagan Sinembah Raya Kab. Rokan Hilir Kode Pos. 28992</p>
+        </div>
+        <hr class="header-line"><hr class="header-line-thin">
+        <div class="doc-title">
+          <h3>REKAPITULASI NILAI UJIAN KELAS</h3>
+          <p>Kelas: <strong>${targetClass}</strong> &nbsp;|&nbsp; Dicetak: ${new Date().toLocaleDateString('id-ID', {day:'2-digit',month:'long',year:'numeric'})}</p>
+        </div>
+        <table>
+          <thead><tr>
+            <th style="width:30px;">No</th>
+            <th style="text-align:left; min-width:140px;">Nama Siswa</th>
+            <th style="text-align:center; min-width:70px;">User ID</th>`;
+
+      subjectNames.forEach(subj => {
+          tableHtml += `<th style="text-align:center; min-width:55px;">${subj}</th>`;
+      });
+
+      tableHtml += `</tr></thead><tbody>`;
+
+      let idx = 1;
+      classStudents.forEach(student => {
+          tableHtml += `<tr>`;
+          tableHtml += `<td style="font-weight:600; color:#94a3b8;">${idx++}</td>`;
+          tableHtml += `<td class="nama">${student.username}</td>`;
+          tableHtml += `<td style="font-family:monospace;">${student.id}</td>`;
+
+          classExams.forEach(exam => {
+              const res = studentResults[student.id][exam.id];
+              if (!res) {
+                  tableHtml += `<td style="color:#94a3b8; font-weight:400;">-</td>`;
+              } else {
+                  const isCheat = res.status === 'Curang';
+                  const isDone = res.status === 'Completed' || res.status === 'Selesai';
+                  
+                  let scoreText = res.score;
+                  let scoreStyle = 'font-weight:600;';
+                  
+                  if (isCheat) {
+                      scoreText = 'CURANG';
+                      scoreStyle = 'color:#dc2626; text-decoration:line-through; font-weight:600; font-size:9px;';
+                  } else if (isDone) {
+                      scoreStyle = Number(res.score) >= 75 ? 'color:#059669; font-weight:600;' : (Number(res.score) < 50 ? 'color:#dc2626; font-weight:600;' : 'color:#ea580c; font-weight:600;');
+                  } else {
+                      scoreText = 'Ujian';
+                      scoreStyle = 'color:#eab308; font-weight:600; font-size:9px;';
+                  }
+                  
+                  tableHtml += `<td style="${scoreStyle}">${scoreText}</td>`;
+              }
+          });
+          tableHtml += `</tr>`;
+      });
+
+      tableHtml += `</tbody></table>
+        <div class="footer">
+          <div class="ttd">
+            <p>Mengetahui,</p>
+            <p>Wali Kelas / Guru</p>
+            <div class="line">( _________________________ )</div>
+            <p style="font-size:9px; color:#94a3b8; margin-top:2px;">NIP.</p>
+          </div>
+        </div>
+      </body></html>`;
+
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+
+      const printWin = window.open('', '_blank', 'width=1100,height=700');
+      if (printWin) {
+        printWin.document.write(tableHtml);
+        printWin.document.close();
+        printWin.onload = () => {
+          printWin.focus();
+          printWin.print();
+          printWin.onafterprint = () => printWin.close();
+        };
+      } else {
+        Swal.fire('Error', 'Gagal membuka jendela baru. Pastikan popup dibolehkan.', 'error');
+      }
+    }).catch(err => {
+        console.error(err);
+        Swal.fire('Error', 'Gagal mengambil data dari database.', 'error');
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    });
+  });
 }
 
 
