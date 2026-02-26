@@ -4,7 +4,7 @@
   <base target="_top">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ujian Online MTs Bustanul Ulum</title>
+  <title>Ujian Online V.3 | Ujian Online</title>
   
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -1652,25 +1652,32 @@ function renderNilaiPraktek(container) {
             </h2>
             <p class="text-sm text-slate-500 mt-1">Input dan kelola nilai praktek siswa per kelas.</p>
           </div>
-          <div class="flex flex-wrap items-center gap-3">
-            <select id="praktek-class-filter" onchange="loadPraktekGrid()" class="border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-500 outline-none font-bold text-slate-700 bg-white cursor-pointer shadow-sm">
-              <option value="">-- Pilih Kelas --</option>
-            </select>
-            <select id="praktek-subj-filter" onchange="loadPraktekGrid()" class="border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-orange-500 outline-none font-bold text-slate-700 bg-white cursor-pointer shadow-sm">
-              <option value="">-- Semua Mata Pelajaran --</option>
-            </select>
-            <button onclick="loadPraktekGrid()" title="Refresh data nilai" class="bg-slate-600 hover:bg-slate-700 text-white w-10 h-10 rounded-xl text-sm font-bold shadow transition flex items-center justify-center transform active:scale-95 active:rotate-180">
-              <i class="fas fa-sync-alt"></i>
-            </button>
-            <button onclick="simpanSemuaNilaiPraktek()" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-blue-500/20 transition flex items-center gap-2 transform active:scale-95">
-              <i class="fas fa-save"></i> Simpan Semua Nilai
-            </button>
-            <button onclick="exportPraktekExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-emerald-500/20 transition flex items-center gap-2 transform active:scale-95">
-              <i class="fas fa-file-excel"></i> Export Excel
-            </button>
-            <button onclick="exportPraktekPDF()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-red-500/20 transition flex items-center gap-2 transform active:scale-95">
-              <i class="fas fa-file-pdf"></i> Export PDF
-            </button>
+          <div class="flex flex-col md:flex-row items-stretch md:items-center gap-3 md:gap-4 w-full md:w-auto mt-3 md:mt-0">
+            <!-- Filter Group: Kelas, Mapel, Refresh (Inline di mobile) -->
+            <div class="flex items-center gap-2 w-full md:w-auto">
+              <select id="praktek-class-filter" onchange="loadPraktekGrid()" class="w-[30%] md:w-auto border border-slate-300 rounded-xl px-2 md:px-4 py-2.5 text-xs md:text-sm focus:ring-2 focus:ring-orange-500 outline-none font-bold text-slate-700 bg-white cursor-pointer shadow-sm">
+                <option value="">Kelas</option>
+              </select>
+              <select id="praktek-subj-filter" onchange="loadPraktekGrid()" class="flex-1 md:w-auto border border-slate-300 rounded-xl px-2 md:px-4 py-2.5 text-xs md:text-sm focus:ring-2 focus:ring-orange-500 outline-none font-bold text-slate-700 bg-white cursor-pointer shadow-sm truncate">
+                <option value="">Semua Mapel</option>
+              </select>
+              <button onclick="loadPraktekGrid()" title="Refresh data nilai" class="shrink-0 bg-slate-600 hover:bg-slate-700 text-white w-[42px] md:w-11 h-[42px] md:h-11 rounded-xl text-sm font-bold shadow transition flex items-center justify-center transform active:scale-95 active:rotate-180">
+                <i class="fas fa-sync-alt"></i>
+              </button>
+            </div>
+            
+            <!-- Button Group: Save, Excel, PDF (Sejajar & Simetris di mobile) -->
+            <div class="grid grid-cols-3 md:flex items-center gap-2 w-full md:w-auto">
+              <button onclick="simpanSemuaNilaiPraktek()" class="bg-blue-600 hover:bg-blue-700 text-white flex flex-col md:flex-row items-center justify-center py-2 md:py-2.5 px-1 md:px-5 rounded-xl md:text-sm font-bold shadow-lg shadow-blue-500/20 transition gap-1 md:gap-2 transform active:scale-95">
+                <i class="fas fa-save text-sm md:text-base"></i> <span class="text-[10px] md:text-sm leading-tight text-center">Save Nilai</span>
+              </button>
+              <button onclick="exportPraktekExcel()" title="Export Excel" class="bg-emerald-600 hover:bg-emerald-700 text-white flex flex-col md:flex-row items-center justify-center py-2 md:py-2.5 px-1 md:px-4 rounded-xl font-bold shadow-lg shadow-emerald-500/20 transition gap-1 md:gap-2 transform active:scale-95">
+                <i class="fas fa-file-excel text-lg md:text-base"></i> <span class="hidden md:inline md:text-sm leading-tight">Export Excel</span>
+              </button>
+              <button onclick="exportPraktekPDF()" title="Export PDF" class="bg-red-600 hover:bg-red-700 text-white flex flex-col md:flex-row items-center justify-center py-2 md:py-2.5 px-1 md:px-4 rounded-xl font-bold shadow-lg shadow-red-500/20 transition gap-1 md:gap-2 transform active:scale-95">
+                <i class="fas fa-file-pdf text-lg md:text-base"></i> <span class="hidden md:inline md:text-sm leading-tight">Export PDF</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2054,7 +2061,7 @@ function renderNilaiPraktek(container) {
             <span class="text-xs text-slate-500">${students.length} siswa • ${visibleSubjects.length} mapel</span>
           </div>
           <div class="text-xs text-orange-600 font-semibold flex items-center gap-1">
-            <i class="fas fa-info-circle"></i> Klik "Simpan Semua Nilai" untuk menyimpan
+            <i class="fas fa-info-circle"></i> Klik "Save Nilai" untuk menyimpan
           </div>
         </div>
         <div class="overflow-auto" style="max-height: 70vh;">
@@ -9853,4 +9860,3 @@ document.addEventListener('DOMContentLoaded', function() {
 </body>
 </html>
   
-
