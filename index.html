@@ -2569,7 +2569,7 @@ function renderAdminHome(container) {
                    <i class="fas fa-info-circle text-blue-400"></i> Informasi Penting
                   </h3>
                   <p class="text-slate-400 text-xs mb-6 leading-relaxed border-b border-slate-700 pb-4">
-                      Refresh Data setelah melakukan perubahan pada aplikasi.
+                      Refresh Data setelah melakukan perubahan aplikasi.
                   </p>
                   
                   <div class="space-y-3">
@@ -2584,13 +2584,13 @@ function renderAdminHome(container) {
                           <i class="fab fa-google-drive text-green-400 mt-1"></i>
                           <div>
                               <strong class="block text-sm text-slate-200">Database</strong>
-                              <span class="text-[11px] text-slate-500">Terhubung ke Firebase Real-Time.</span>
+                              <span class="text-[11px] text-slate-500">Terhubung ke Real-Time Firebase.</span>
                           </div>
                       </div>
                   </div>
               </div>
               <div class="bg-slate-950 p-3 text-center text-[10px] text-slate-600 font-mono">
-                  Created by Operator Madrasah
+                  System v2.0 • Secure Connection
               </div>
           </div>
        </div>
@@ -5903,11 +5903,16 @@ function saveComplexBS(qid, index, val) {
           if (isCp) {
               const q = questions[currentQIndex];
               let isAns = answers[q.id];
-              if(typeof isAns === 'object') isAns = Object.keys(isAns).length > 0;
-              else if (typeof isAns === 'string') isAns = String(isAns).trim() !== '';
+              if(typeof isAns === 'object') {
+                  isAns = Object.keys(isAns).length > 0;
+              } else if (typeof isAns === 'string') {
+                  // Strips out empty paragraph tags commonly inserted by rich text editors
+                  let cleanStr = String(isAns).replace(/<[^>]*>?/gm, '').trim();
+                  isAns = cleanStr !== '' && cleanStr !== '&nbsp;';
+              }
 
               if (isAns && !checkpoints[currentQIndex]) {
-                  checkpoints[currentQIndex] = { status: 'running', remaining: 60, interval: null };
+                  checkpoints[currentQIndex] = { status: 'running', remaining: 120, interval: null };
                   
                   const Toast = Swal.mixin({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000 });
                   Toast.fire({ icon: 'info', title: 'Waktu Wajib Koreksi Dimulai!' });
@@ -10009,4 +10014,3 @@ document.addEventListener('DOMContentLoaded', function() {
 </body>
 </html>
   
-
