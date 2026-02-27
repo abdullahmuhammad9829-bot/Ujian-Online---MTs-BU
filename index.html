@@ -4836,11 +4836,25 @@ async function generateBukuLegerPDF(className) {
       }
     });
 
-    const examsInClass = cachedExams.filter(e => e.class === className);
-    if(examsInClass.length === 0) {
-      throw new Error("Tidak ada data mapel untuk kelas ini.");
+    let examsInClass = cachedExams.filter(e => e.class === className);
+    
+    if (currentUser && currentUser.role === 'Guru') {
+      const assignments = String(currentUser.class || '').split(',').map(a => a.trim());
+      const teacherSubjects = assignments.map(a => {
+          const parts = a.split(':');
+          return parts[0] ? parts[0].trim().toLowerCase() : '';
+      }).filter(Boolean);
+  
+      examsInClass = examsInClass.filter(e => {
+          const examSubj = e.subject ? e.subject.toLowerCase().trim() : '';
+          return teacherSubjects.some(ts => ts === examSubj);
+      });
     }
-    examsInClass.sort((a,b) => a.subject.localeCompare(b.subject));
+
+    if(examsInClass.length === 0) {
+      throw new Error("Tidak ada data mapel untuk kelas ini yang bisa diakses.");
+    }
+    examsInClass.sort((a,b) => (a.subject || '').localeCompare(b.subject || ''));
 
     const ensureUsersLoaded = (typeof allUsersData !== 'undefined' && allUsersData && allUsersData.length > 0)
       ? Promise.resolve()
@@ -4959,88 +4973,124 @@ async function generateBukuLegerPDF(className) {
        sd.rank = index + 1;
     });
 
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF('landscape');
+    const logoImg = document.getElementById('login-logo-img') || document.querySelector('.sidebar-logo') || document.querySelector('img[src*="logo"]');
+    const logoUrl = logoImg ? logoImg.src : 'https://via.placeholder.com/150';
 
-    doc.setFontSize(14);
-    doc.setFont("helvetica", "bold");
-    doc.text(`REKAPITULASI NILAI (BUKU LEGER) - KELAS ${className}`, doc.internal.pageSize.width / 2, 15, { align: 'center' });
-    
-    doc.setFontSize(10);
-    doc.setFont("helvetica", "normal");
-    doc.text(`Tanggal Cetak: ${new Date().toLocaleDateString('id-ID')}`, doc.internal.pageSize.width / 2, 22, { align: 'center' });
-
-    let head1 = [{ content: 'No', rowSpan: 2 }, { content: 'Nama Siswa', rowSpan: 2 }];
-    let head2 = [];
+    let tableHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>Buku Leger - Kelas ${className}</title>
+      <style>
+        @page { size: landscape; margin: 10mm; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; color: #1e293b; padding: 5mm; }
+        .header { text-align: center; margin-bottom: 25px; position: relative; }
+        .header .logo { position: absolute; left: 15px; top: 0; width: 85px; height: auto; }
+        .header h1 { font-size: 16px; font-weight: bold; margin-bottom: 4px; letter-spacing: 1px; color: #0f172a; }
+        .header h2 { font-size: 20px; font-weight: 800; margin-bottom: 4px; color: #1e40af; letter-spacing: 1.5px; }
+        .header p { font-size: 10px; margin-bottom: 3px; color: #334155; }
+        .header p.small-text { font-size: 9px; }
+        .header-line { margin-top: 10px; margin-bottom: 2px; border: 0; border-top: 3px solid #000; display: block; }
+        .header-line-thin { border: 0; border-top: 1px solid #000; margin-bottom: 20px; display: block; }
+        .doc-title { text-align: center; margin-bottom: 15px; }
+        .doc-title h3 { font-size: 14px; text-decoration: underline; font-weight: bold; }
+        .doc-title p { font-size: 11px; margin-top: 3px; }
+        table { width: 100%; border-collapse: collapse; font-size: 9px; }
+        thead { display: table-header-group; }
+        tr { page-break-inside: avoid; }
+        /* Garis tabel diperjelas dengan border hitam tebal (#000) */
+        th { background: #1e293b; color: white; border: 1px solid #000; padding: 6px 4px; text-align: center; font-size: 8px; text-transform: uppercase; letter-spacing: 0.02em; }
+        td { border: 1px solid #000; padding: 5px 4px; text-align: center; vertical-align: middle; color: #000; }
+        td.nama { text-align: left; font-weight: 500; }
+        tr:nth-child(even) { background: #f8fafc; }
+        .footer { margin-top: 25px; display: flex; justify-content: flex-end; page-break-inside: avoid; }
+        .ttd { text-align: center; min-width: 180px; font-size: 10px; color: #475569; }
+        .ttd .line { border-top: 1px solid #000; margin-top: 60px; padding-top: 3px; }
+      </style>
+    </head><body>
+      <div class="header">
+        <img src="${logoUrl}" class="logo" alt="Logo KOP Surat" crossorigin="anonymous">
+        <h1>YAYASAN BUSTANUL ULUM ROKAN HILIR</h1>
+        <h2>MADRASAH TSANAWIYAH BUSTANUL ULUM</h2>
+        <p class="small-text">KEC. BAGAN SINEMBAH RAYA KAB. ROKAN HILIR PROV. RIAU</p>
+        <p>Terakreditasi B</p>
+        <p class="small-text">AKTA NOTARIS 37/2016 &nbsp;&nbsp;|&nbsp;&nbsp; PIAGAM NO. Kd.04.8/3/pp.00.4/MTs/1225/2010</p>
+        <p class="small-text">IJOP : 59 Tahun 2010 &nbsp;&nbsp;|&nbsp;&nbsp; NSM : 121214070048 &nbsp;&nbsp;|&nbsp;&nbsp; NPSN : 10499236</p>
+        <p style="font-style: italic;">Alamat : Panca Mukti Kec. Bagan Sinembah Raya Kab. Rokan Hilir Kode Pos. 28992</p>
+      </div>
+      <hr class="header-line"><hr class="header-line-thin">
+      <div class="doc-title">
+        <h3>REKAPITULASI NILAI (BUKU LEGER)</h3>
+        <p>Kelas: <strong>${className}</strong> &nbsp;|&nbsp; Dicetak: ${new Date().toLocaleDateString('id-ID', {day:'2-digit',month:'long',year:'numeric'})}</p>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th rowspan="2" style="width:25px;">No</th>
+            <th rowspan="2" style="text-align:left; min-width:120px;">Nama Siswa</th>`;
 
     examsInClass.forEach(exam => {
-       head1.push({ content: exam.subject, colSpan: 2, styles: { halign: 'center' } });
-       head2.push('Ujian', 'Praktek');
+       tableHtml += `<th colspan="2" style="text-align:center;">${exam.subject}</th>`;
     });
 
-    head1.push({ content: 'Total', rowSpan: 2 });
-    head1.push({ content: 'Rata-rata', rowSpan: 2 });
-    head1.push({ content: 'Ranking', rowSpan: 2 });
+    tableHtml += `<th rowspan="2" style="width:40px;">Total</th>
+            <th rowspan="2" style="width:40px;">Rata-rata</th>
+            <th rowspan="2" style="width:35px;">Ranking</th>
+          </tr><tr>`;
 
-    let body = [];
+    examsInClass.forEach(exam => {
+       tableHtml += `<th>Ujian</th><th>Praktek</th>`;
+    });
+
+    tableHtml += `</tr></thead><tbody>`;
+
     studentData.forEach((sd, i) => {
-       let row = [];
-       row.push(i + 1);
-       row.push(sd.name);
+       tableHtml += `<tr>
+          <td style="font-weight:600;">${i + 1}</td>
+          <td class="nama">${sd.name}</td>`;
        
        examsInClass.forEach(exam => {
           let s = sd.scores[exam.id];
-          row.push(s.ujian);
-          row.push(s.praktek);
+          tableHtml += `<td>${s.ujian}</td><td>${s.praktek}</td>`;
        });
 
-       row.push(sd.total % 1 === 0 ? sd.total.toString() : sd.total.toFixed(2));
-       row.push(sd.rataRata % 1 === 0 ? sd.rataRata.toString() : sd.rataRata.toFixed(2));
-       row.push(sd.rank);
-
-       body.push(row);
+       tableHtml += `
+          <td style="font-weight:bold;">${sd.total % 1 === 0 ? sd.total.toString() : sd.total.toFixed(2)}</td>
+          <td style="font-weight:bold;">${sd.rataRata % 1 === 0 ? sd.rataRata.toString() : sd.rataRata.toFixed(2)}</td>
+          <td style="font-weight:bold;">${sd.rank}</td>
+       </tr>`;
     });
 
-    doc.autoTable({
-      startY: 30,
-      head: [head1, head2],
-      body: body,
-      theme: 'grid',
-      styles: { 
-        fontSize: 7, 
-        cellPadding: 1,
-        overflow: 'linebreak'
-      },
-      headStyles: {
-        fillColor: [43, 54, 158], // Warna biru sidebar
-        textColor: 255,
-        halign: 'center',
-        valign: 'middle'
-      },
-      columnStyles: {
-        0: { halign: 'center', cellWidth: 8 }, 
-        1: { cellWidth: 35 } 
-      },
-      didDrawPage: function (data) {
-        let str = 'Halaman ' + doc.internal.getNumberOfPages();
-        doc.setFontSize(8);
-        doc.text(
-            str,
-            data.settings.margin.left,
-            doc.internal.pageSize.height - 10
-        );
-      }
-    });
+    tableHtml += `</tbody></table>
+      <div class="footer">
+        <div class="ttd">
+          <p>Mengetahui,</p>
+          <p>Wali Kelas / Guru</p>
+          <div class="line">( _________________________ )</div>
+          <p style="font-size:9px; color:#475569; margin-top:2px;">NIP.</p>
+        </div>
+      </div>
+    </body></html>`;
 
-    doc.save(`Buku_Leger_Kelas_${className}.pdf`);
+    Swal.close(); // Close the loading modal
 
-    Swal.fire({
-      icon: 'success',
-      title: 'Berhasil',
-      text: 'File Buku Leger PDF berhasil diunduh.',
-      timer: 2000,
-      showConfirmButton: false
-    });
+    const printWin = window.open('', '_blank');
+    if (printWin) {
+      printWin.document.write(tableHtml);
+      printWin.document.close();
+      printWin.onload = () => {
+        printWin.focus();
+        printWin.print();
+        printWin.onafterprint = () => printWin.close();
+      };
+      Swal.fire({
+        icon: 'success',
+        title: 'Berhasil',
+        text: 'Buku Leger siap dicetak.',
+        timer: 2000,
+        showConfirmButton: false
+      });
+    } else {
+      Swal.fire('Error', 'Gagal membuka jendela baru. Pastikan popup dibolehkan.', 'error');
+    }
 
   } catch (error) {
     console.error("Error generating Buku Leger:", error);
@@ -6174,7 +6224,7 @@ function saveComplexBS(qid, index, val) {
               }
 
               if (isAns && !checkpoints[currentQIndex]) {
-                  checkpoints[currentQIndex] = { status: 'running', remaining: 150, interval: null };
+                  checkpoints[currentQIndex] = { status: 'running', remaining: 60, interval: null };
                   
                   const Toast = Swal.mixin({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000 });
                   Toast.fire({ icon: 'info', title: 'Waktu Wajib Koreksi Dimulai!' });
