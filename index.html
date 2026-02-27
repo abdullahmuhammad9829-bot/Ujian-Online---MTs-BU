@@ -6224,7 +6224,7 @@ function saveComplexBS(qid, index, val) {
               }
 
               if (isAns && !checkpoints[currentQIndex]) {
-                  checkpoints[currentQIndex] = { status: 'running', remaining: 150, interval: null };
+                  checkpoints[currentQIndex] = { status: 'running', remaining: 180, interval: null };
                   
                   const Toast = Swal.mixin({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000 });
                   Toast.fire({ icon: 'info', title: 'Waktu Wajib Koreksi Dimulai!' });
@@ -10326,4 +10326,5 @@ document.addEventListener('DOMContentLoaded', function() {
 </body>
 </html>
   
+
 
