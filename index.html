@@ -11,6 +11,8 @@
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script> 
   <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tinymce/6.8.2/tinymce.min.js"></script>
   <script>
@@ -579,7 +581,7 @@
             </div>
             <div class="sidebar-header-text">
               <h1 id="admin-header-title" class="text-white font-bold text-lg tracking-tight">Ujian Online</h1>
-              <p class="text-xs text-slate-400">MTs Bustanul Ulum</p>
+              <p class="text-xs text-slate-400">Admin Panel v2.0</p>
             </div>
           </div>
         </div>
@@ -2569,7 +2571,7 @@ function renderAdminHome(container) {
                    <i class="fas fa-info-circle text-blue-400"></i> Informasi Penting
                   </h3>
                   <p class="text-slate-400 text-xs mb-6 leading-relaxed border-b border-slate-700 pb-4">
-                      Refresh Data setelah melakukan perubahan aplikasi.
+                      Refresh Data setelah melakukan perubahan manual pada Google Spreadsheet.
                   </p>
                   
                   <div class="space-y-3">
@@ -2584,7 +2586,7 @@ function renderAdminHome(container) {
                           <i class="fab fa-google-drive text-green-400 mt-1"></i>
                           <div>
                               <strong class="block text-sm text-slate-200">Database</strong>
-                              <span class="text-[11px] text-slate-500">Terhubung ke Real-Time Firebase.</span>
+                              <span class="text-[11px] text-slate-500">Terhubung ke Google Sheets.</span>
                           </div>
                       </div>
                   </div>
@@ -4013,7 +4015,7 @@ function handleAddQuestion(e) {
       Swal.fire({
         icon: 'error',
         title: 'Data Terlalu Besar',
-        text: `Ukuran opsi jawaban (${Math.round(jsonLength/1024)} KB) melebihi batas. Mohon gunakan gambar yang lebih kecil/sedikit pada pilihan jawaban.`
+        text: `Ukuran opsi jawaban (${Math.round(jsonLength/1024)} KB) melebihi batas Google Sheets. Mohon gunakan gambar yang lebih kecil/sedikit pada pilihan jawaban.`
       });
       return; // Batalkan proses
     }
@@ -4331,6 +4333,9 @@ function renderResults(container, selectedExamId = null) {
                   </button>
                   <button id="btn-pdf-recap" onclick="downloadResultPDF()" class="hidden bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-red-500/30 transition flex items-center gap-2 transform active:scale-95">
                       <i class="fas fa-file-pdf"></i> <span class="hidden sm:inline">Download Rekap PDF</span>
+                  </button>
+                  <button id="btn-buku-leger" onclick="showBukuLegerModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-indigo-500/30 transition flex items-center gap-2 transform active:scale-95">
+                      <i class="fas fa-book"></i> <span class="hidden sm:inline">Buku Leger</span>
                   </button>
                 </div>
             </div>
@@ -4783,6 +4788,263 @@ function renderInternalTable() {
     btnNext.disabled = isLastPage;
     if (isLastPage) btnNext.classList.add('opacity-50', 'cursor-not-allowed');
     else btnNext.classList.remove('opacity-50', 'cursor-not-allowed');
+  }
+}
+
+function showBukuLegerModal() {
+  let classes = [...new Set(cachedExams.map(e => e.class))];
+  if(classes.length === 0) {
+    Swal.fire('Info', 'Belum ada data ujian/kelas.', 'info');
+    return;
+  }
+  
+  let optionsHtml = '<select id="swal-select-kelas" class="swal2-input">';
+  optionsHtml += '<option value="">-- Pilih Kelas --</option>';
+  classes.forEach(c => {
+    optionsHtml += `<option value="${c}">${c}</option>`;
+  });
+  optionsHtml += '</select>';
+
+  Swal.fire({
+    title: 'Cetak Buku Leger',
+    html: 'Pilih kelas untuk rekapitulasi nilai:<br>' + optionsHtml,
+    showCancelButton: true,
+    confirmButtonText: 'Cetak PDF',
+    cancelButtonText: 'Batal',
+    preConfirm: () => {
+      const selectedClass = document.getElementById('swal-select-kelas').value;
+      if (!selectedClass) {
+        Swal.showValidationMessage('Anda harus memilih kelas');
+      }
+      return selectedClass;
+    }
+  }).then((result) => {
+    if (result.isConfirmed) {
+      generateBukuLegerPDF(result.value);
+    }
+  });
+}
+
+async function generateBukuLegerPDF(className) {
+  try {
+    Swal.fire({
+      title: 'Memproses PDF...',
+      html: 'Sedang menghitung nilai dan menyusun tabel buku leger.',
+      allowOutsideClick: false,
+      didOpen: () => {
+        Swal.showLoading();
+      }
+    });
+
+    const examsInClass = cachedExams.filter(e => e.class === className);
+    if(examsInClass.length === 0) {
+      throw new Error("Tidak ada data mapel untuk kelas ini.");
+    }
+    examsInClass.sort((a,b) => a.subject.localeCompare(b.subject));
+
+    const ensureUsersLoaded = (typeof allUsersData !== 'undefined' && allUsersData && allUsersData.length > 0)
+      ? Promise.resolve()
+      : database.ref('Users').once('value').then(snap => {
+          const users = [];
+          snap.forEach(child => {
+            const raw = child.val();
+            users.push({
+              id: raw.UserID || raw.userId || child.key || '',
+              username: raw.Username || raw.username || raw.Name || raw.name || '',
+              name: raw.Username || raw.username || raw.Name || raw.name || '',
+              role: raw.Role || raw.role || 'Siswa',
+              class: raw.Class || raw.class || raw.kelas || ''
+            });
+          });
+          allUsersData = users;
+        });
+
+    await ensureUsersLoaded;
+
+    const studentsInClass = allUsersData.filter(u => {
+      let role = (u.role || 'Siswa').toLowerCase();
+      let kls = (u.class || '');
+      return role === 'siswa' && kls === className;
+    });
+    if(studentsInClass.length === 0) {
+      throw new Error("Tidak ada data siswa di kelas ini.");
+    }
+
+    const [responsesSnap, praktekSnap] = await Promise.all([
+      database.ref('Responses').once('value'),
+      database.ref('Nilai_Praktek/' + className).once('value')
+    ]);
+
+    const examIds = examsInClass.map(e => String(e.id));
+    const studentResults = {};
+    studentsInClass.forEach(s => {
+       studentResults[s.id] = {};
+    });
+
+    responsesSnap.forEach(child => {
+       const resp = child.val();
+       if (resp.ExamID && examIds.includes(String(resp.ExamID)) && studentResults[resp.UserID]) {
+           studentResults[resp.UserID][resp.ExamID] = {
+                 score: resp.Score || 0,
+                 status: resp.Status || '',
+                 submitTime: resp.SubmitTime || ''
+           };
+       }
+    });
+
+    const praktekData = praktekSnap.val() || {};
+
+    let studentData = [];
+
+    studentsInClass.forEach(student => {
+      let scores = {};
+      let totalSemua = 0;
+      let jumlahMapel = examsInClass.length;
+
+      examsInClass.forEach(exam => {
+        let nilaiUjian = 0;
+        let isUjianEmpty = true;
+        
+        // Cek pada struct Response
+        let fetchedObj = studentResults[student.id][exam.id];
+        if (fetchedObj && fetchedObj.score !== undefined && fetchedObj.score !== null) {
+          nilaiUjian = Number(fetchedObj.score);
+          isUjianEmpty = false;
+        }
+
+        let nilaiPraktek = 0;
+        let isPraktekEmpty = true;
+        
+        const safeSubject = (exam.subject || '').replace(/[.#$\[\]]/g, '');
+
+        if (praktekData[student.id] && praktekData[student.id][safeSubject] !== undefined && praktekData[student.id][safeSubject] !== null) {
+          // Additional fallback for old data where space was not replaced
+          nilaiPraktek = Number(praktekData[student.id][safeSubject]);
+          isPraktekEmpty = false;
+        } else if (praktekData[student.id] && praktekData[student.id][exam.subject] !== undefined && praktekData[student.id][exam.subject] !== null) {
+          // Extra fallback logic matched from Nilai Praktek grid rendering
+          nilaiPraktek = Number(praktekData[student.id][exam.subject]);
+          isPraktekEmpty = false;
+        }
+
+        scores[exam.id] = {
+           ujian: isUjianEmpty ? "-" : Math.round(nilaiUjian),
+           praktek: isPraktekEmpty ? "-" : Math.round(nilaiPraktek)
+        };
+
+        let valUjian = isUjianEmpty ? 0 : nilaiUjian;
+        let valPraktek = isPraktekEmpty ? 0 : nilaiPraktek;
+        totalSemua += (valUjian + valPraktek);
+      });
+
+      let rataRata = totalSemua / (jumlahMapel || 1);
+
+      studentData.push({
+        id: student.id,
+        name: student.name || student.username || 'Unknown',
+        scores: scores,
+        total: totalSemua,
+        rataRata: rataRata
+      });
+    });
+
+    studentData.sort((a, b) => {
+      if (Math.abs(b.rataRata - a.rataRata) > 0.0001) {
+         return b.rataRata - a.rataRata;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    studentData.forEach((sd, index) => {
+       sd.rank = index + 1;
+    });
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF('landscape');
+
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text(`REKAPITULASI NILAI (BUKU LEGER) - KELAS ${className}`, doc.internal.pageSize.width / 2, 15, { align: 'center' });
+    
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Tanggal Cetak: ${new Date().toLocaleDateString('id-ID')}`, doc.internal.pageSize.width / 2, 22, { align: 'center' });
+
+    let head1 = [{ content: 'No', rowSpan: 2 }, { content: 'Nama Siswa', rowSpan: 2 }];
+    let head2 = [];
+
+    examsInClass.forEach(exam => {
+       head1.push({ content: exam.subject, colSpan: 2, styles: { halign: 'center' } });
+       head2.push('Ujian', 'Praktek');
+    });
+
+    head1.push({ content: 'Total', rowSpan: 2 });
+    head1.push({ content: 'Rata-rata', rowSpan: 2 });
+    head1.push({ content: 'Ranking', rowSpan: 2 });
+
+    let body = [];
+    studentData.forEach((sd, i) => {
+       let row = [];
+       row.push(i + 1);
+       row.push(sd.name);
+       
+       examsInClass.forEach(exam => {
+          let s = sd.scores[exam.id];
+          row.push(s.ujian);
+          row.push(s.praktek);
+       });
+
+       row.push(sd.total % 1 === 0 ? sd.total.toString() : sd.total.toFixed(2));
+       row.push(sd.rataRata % 1 === 0 ? sd.rataRata.toString() : sd.rataRata.toFixed(2));
+       row.push(sd.rank);
+
+       body.push(row);
+    });
+
+    doc.autoTable({
+      startY: 30,
+      head: [head1, head2],
+      body: body,
+      theme: 'grid',
+      styles: { 
+        fontSize: 7, 
+        cellPadding: 1,
+        overflow: 'linebreak'
+      },
+      headStyles: {
+        fillColor: [43, 54, 158], // Warna biru sidebar
+        textColor: 255,
+        halign: 'center',
+        valign: 'middle'
+      },
+      columnStyles: {
+        0: { halign: 'center', cellWidth: 8 }, 
+        1: { cellWidth: 35 } 
+      },
+      didDrawPage: function (data) {
+        let str = 'Halaman ' + doc.internal.getNumberOfPages();
+        doc.setFontSize(8);
+        doc.text(
+            str,
+            data.settings.margin.left,
+            doc.internal.pageSize.height - 10
+        );
+      }
+    });
+
+    doc.save(`Buku_Leger_Kelas_${className}.pdf`);
+
+    Swal.fire({
+      icon: 'success',
+      title: 'Berhasil',
+      text: 'File Buku Leger PDF berhasil diunduh.',
+      timer: 2000,
+      showConfirmButton: false
+    });
+
+  } catch (error) {
+    console.error("Error generating Buku Leger:", error);
+    Swal.fire('Error', 'Gagal memproses PDF: ' + error.message, 'error');
   }
 }
 
@@ -5912,7 +6174,7 @@ function saveComplexBS(qid, index, val) {
               }
 
               if (isAns && !checkpoints[currentQIndex]) {
-                  checkpoints[currentQIndex] = { status: 'running', remaining: 120, interval: null };
+                  checkpoints[currentQIndex] = { status: 'running', remaining: 150, interval: null };
                   
                   const Toast = Swal.mixin({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000 });
                   Toast.fire({ icon: 'info', title: 'Waktu Wajib Koreksi Dimulai!' });
