@@ -1296,7 +1296,7 @@ function initAdminPanel() {
   }
 
   // --- LOGIKA BARU: Sembunyikan Menu untuk Guru ---
-  const restrictedMenus = ['menu-users', 'menu-config', 'menu-master-data'];
+  const restrictedMenus = ['menu-users', 'menu-config', 'menu-master-data', 'menu-eraport'];
 
   if (currentUser && currentUser.role === 'Guru') {
     // Jika Guru, sembunyikan menu
@@ -4530,6 +4530,9 @@ function renderResults(container, selectedExamId = null) {
                   <button id="btn-buku-leger" onclick="showBukuLegerModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-indigo-500/30 transition flex items-center gap-2 transform active:scale-95">
                       <i class="fas fa-book"></i> <span class="hidden sm:inline">Buku Leger</span>
                   </button>
+                  <button onclick="renderResultCards()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-2.5 rounded-xl text-sm font-bold transition flex items-center gap-1 transform active:scale-95" title="Refresh Data">
+                      <i class="fas fa-sync-alt"></i>
+                  </button>
                 </div>
             </div>
 
@@ -6861,7 +6864,7 @@ function saveComplexBS(qid, index, val) {
               }
 
               if (isAns && !checkpoints[currentQIndex]) {
-                  checkpoints[currentQIndex] = { status: 'running', remaining: 180, interval: null };
+                  checkpoints[currentQIndex] = { status: 'running', remaining: 200, interval: null };
                   
                   const Toast = Swal.mixin({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000 });
                   Toast.fire({ icon: 'info', title: 'Waktu Wajib Koreksi Dimulai!' });
@@ -10680,6 +10683,9 @@ function renderAbsensi(container) {
                     </h2>
                     <p class="text-sm text-slate-500 mt-1">Rekap kehadiran peserta ujian secara real-time.</p>
                 </div>
+                <button onclick="absensiRekapPDF()" class="bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-red-500/20 transition flex items-center gap-2 transform active:scale-95">
+                    <i class="fas fa-file-pdf"></i> Rekap Absensi PDF
+                </button>
             </div>
 
             <!-- FILTERS -->
@@ -11091,6 +11097,270 @@ function filterAbsensiCards() {
     });
 }
 
+// ============================================
+//  REKAP ABSENSI PDF
+// ============================================
+function absensiRekapPDF() {
+  // Ask for class selection
+  const classOptions = (masterData.classes || []).map(c => `<option value="${c}">${c}</option>`).join('');
+  if (!classOptions) {
+    Swal.fire('Peringatan', 'Data kelas belum dimuat. Silakan buka menu Data Master terlebih dahulu.', 'warning');
+    return;
+  }
+
+  Swal.fire({
+    title: '<i class="fas fa-file-pdf text-red-500"></i> Rekap Absensi PDF',
+    html: `
+      <div class="text-left space-y-3">
+        <div>
+          <label class="block text-xs font-bold text-slate-500 uppercase mb-1">Kelas</label>
+          <select id="swal-rekap-class" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold">
+            <option value="">-- Pilih Kelas --</option>
+            ${classOptions}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-500 uppercase mb-1">Kepala Madrasah</label>
+          <input type="text" id="swal-rekap-kepsek" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Nama Kepala Madrasah">
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-500 uppercase mb-1">NIP Kepala Madrasah</label>
+          <input type="text" id="swal-rekap-nip" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="NIP">
+        </div>
+      </div>
+    `,
+    showCancelButton: true,
+    confirmButtonText: '<i class="fas fa-file-pdf mr-1"></i> Generate PDF',
+    cancelButtonText: 'Batal',
+    confirmButtonColor: '#dc2626',
+    cancelButtonColor: '#64748b',
+    preConfirm: () => {
+      const kelas = document.getElementById('swal-rekap-class').value;
+      if (!kelas) { Swal.showValidationMessage('Pilih kelas terlebih dahulu'); return false; }
+      return {
+        kelas,
+        kepsek: document.getElementById('swal-rekap-kepsek').value.trim(),
+        nip: document.getElementById('swal-rekap-nip').value.trim()
+      };
+    }
+  }).then(result => {
+    if (!result.isConfirmed) return;
+    const { kelas, kepsek, nip } = result.value;
+
+    Swal.fire({
+      title: 'Memproses...',
+      html: '<i class="fas fa-spinner fa-spin mr-2"></i>Mengambil data absensi...',
+      allowOutsideClick: false,
+      showConfirmButton: false,
+      didOpen: () => Swal.showLoading()
+    });
+
+    // Fetch all needed data
+    const ensureUsers = allUsersData.length > 0
+      ? Promise.resolve()
+      : database.ref('Users').once('value').then(snap => {
+          const users = [];
+          snap.forEach(child => {
+            const raw = child.val();
+            users.push({ _key: child.key, id: raw.UserID || '', username: raw.Username || '', role: raw.Role || 'Siswa', class: raw.Class || '-' });
+          });
+          allUsersData = users;
+        });
+
+    ensureUsers.then(() => {
+      const students = allUsersData
+        .filter(u => (u.role || 'Siswa') === 'Siswa' && u.class === kelas)
+        .sort((a, b) => a.username.localeCompare(b.username));
+
+      if (students.length === 0) {
+        Swal.fire('Kosong', 'Tidak ada siswa di kelas ' + kelas, 'info');
+        return;
+      }
+
+      // Fetch exams and attendance
+      return Promise.all([
+        database.ref('Exams').once('value'),
+        database.ref('Attendance').once('value')
+      ]).then(([snapExams, snapAtt]) => {
+        // Get all exams for this class
+        const examsForClass = [];
+        snapExams.forEach(child => {
+          const ex = child.val();
+          if (ex.Class === kelas || ex.class === kelas) {
+            examsForClass.push({
+              id: ex.ExamID || child.key,
+              subject: ex.Subject || ex.subject || 'Unknown'
+            });
+          }
+        });
+
+        if (examsForClass.length === 0) {
+          Swal.fire('Kosong', 'Tidak ada ujian untuk kelas ' + kelas, 'info');
+          return;
+        }
+
+        // Unique subjects (in case multiple exams have same subject, take first)
+        const subjectMap = new Map();
+        examsForClass.forEach(ex => {
+          if (!subjectMap.has(ex.subject)) {
+            subjectMap.set(ex.subject, ex.id);
+          }
+        });
+        const subjects = Array.from(subjectMap.keys());
+        const subjectExamIds = Array.from(subjectMap.values());
+
+        // Build attendance map: { examId: { userId: status } }
+        const attMap = {};
+        snapAtt.forEach(child => {
+          const att = child.val();
+          if (!attMap[att.ExamID]) attMap[att.ExamID] = {};
+          attMap[att.ExamID][att.UserID] = att.Status || 'Hadir';
+        });
+
+        // Build table
+        const statusChar = { 'Hadir': 'H', 'Sakit': 'S', 'Izin': 'I', 'Alpa': 'A' };
+        let tableRows = '';
+        students.forEach((student, idx) => {
+          let totalH = 0, totalS = 0, totalI = 0, totalA = 0;
+          let cells = '';
+          subjectExamIds.forEach(examId => {
+            const status = attMap[examId] && attMap[examId][student.id] ? attMap[examId][student.id] : 'Hadir';
+            const ch = statusChar[status] || 'H';
+            if (status === 'Hadir') totalH++;
+            else if (status === 'Sakit') totalS++;
+            else if (status === 'Izin') totalI++;
+            else if (status === 'Alpa') totalA++;
+            const colorStyle = status === 'Hadir' ? 'color:#16a34a;' : status === 'Sakit' ? 'color:#d97706;' : status === 'Izin' ? 'color:#2563eb;' : 'color:#dc2626; font-weight:bold;';
+            cells += '<td style="text-align:center; ' + colorStyle + '">' + ch + '</td>';
+          });
+          tableRows += '<tr>'
+            + '<td style="text-align:center;">' + (idx + 1) + '</td>'
+            + '<td>' + student.username + '</td>'
+            + '<td style="text-align:center;">' + student.id + '</td>'
+            + cells
+            + '<td style="text-align:center; color:#16a34a; font-weight:bold;">' + totalH + '</td>'
+            + '<td style="text-align:center; color:#d97706; font-weight:bold;">' + totalS + '</td>'
+            + '<td style="text-align:center; color:#2563eb; font-weight:bold;">' + totalI + '</td>'
+            + '<td style="text-align:center; color:#dc2626; font-weight:bold;">' + totalA + '</td>'
+            + '</tr>';
+        });
+
+        // Subject headers
+        const subjectHeaders = subjects.map(s => '<th style="writing-mode: vertical-lr; text-orientation: mixed; min-width:30px; padding:8px 4px; font-size:9px;">' + s + '</th>').join('');
+
+        const logoKiri = 'https://image2url.com/r2/default/images/1772488688008-9fedcbee-20ec-4fe6-8e26-9e637cdcb6a8.png';
+        const logoKanan = 'https://image2url.com/r2/default/images/1769579795504-652ce4de-f7e1-46c9-a2b3-16cb4cc01ff3.png';
+        const tanggalCetak = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' });
+
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+          <title>Rekap Absensi - ${kelas}</title>
+          <style>
+            @page { size: A4 landscape; margin: 10mm; }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: 'Times New Roman', Times, serif; font-size: 11px; color: #000; padding: 10mm; line-height: 1.4; }
+            .kop { text-align: center; position: relative; padding: 0 100px; margin-bottom: 5px; }
+            .kop .logo-left { position: absolute; left: 10px; top: 0; width: 90px; height: auto; }
+            .kop .logo-right { position: absolute; right: 10px; top: 0; width: 90px; height: auto; }
+            .kop h1 { font-size: 13px; font-weight: bold; margin-bottom: 2px; }
+            .kop h2 { font-size: 17px; font-weight: bold; margin-bottom: 2px; }
+            .kop p { font-size: 9px; margin: 1px 0; }
+            .kop .small-bold { font-size: 8px; font-weight: bold; }
+            .hr-thick { border: 0; border-top: 3px solid #000; margin-top: 8px; margin-bottom: 2px; }
+            .hr-thin { border: 0; border-top: 1px solid #000; margin-bottom: 12px; }
+            .doc-title { text-align: center; margin-bottom: 8px; }
+            .doc-title h3 { font-size: 14px; text-decoration: underline; font-weight: bold; text-transform: uppercase; }
+            .doc-title p { font-size: 11px; margin-top: 3px; }
+            table.rekap { width: 100%; border-collapse: collapse; font-size: 10px; margin-bottom: 10px; }
+            table.rekap th, table.rekap td { border: 1px solid #000; padding: 4px 5px; }
+            table.rekap th { background: #f0f0f0; font-weight: bold; text-align: center; font-size: 9px; }
+            table.rekap tr:nth-child(even) { background: #fafafa; }
+            .legend { margin-top: 8px; font-size: 10px; }
+            .legend span { margin-right: 15px; }
+            .ttd-container { width: 100%; margin-top: 25px; page-break-inside: avoid; }
+            .ttd-right { text-align: center; float: right; width: 250px; }
+            .ttd-line { margin-top: 60px; border-top: 1px solid #000; display: inline-block; min-width: 200px; padding-top: 3px; }
+            .ttd-nip { font-size: 9px; color: #555; margin-top: 2px; }
+            @media print {
+              @page { size: A4 landscape; margin: 10mm; }
+              body { padding: 0; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            }
+          </style>
+        </head><body>
+          <!-- KOP SURAT -->
+          <div class="kop">
+            <img src="${logoKiri}" class="logo-left" alt="Logo Kiri" crossorigin="anonymous">
+            <img src="${logoKanan}" class="logo-right" alt="Logo Kanan" crossorigin="anonymous">
+            <h1>YAYASAN BUSTANUL ULUM ROKAN HILIR</h1>
+            <h2>MADRASAH TSANAWIYAH BUSTANUL ULUM</h2>
+            <p class="small-bold">KEC. BAGAN SINEMBAH RAYA KAB. ROKAN HILIR PROV. RIAU</p>
+            <p>Terakreditasi B</p>
+            <p class="small-bold">AKTA NOTARIS 37/2016 &nbsp;&nbsp;|&nbsp;&nbsp; PIAGAM NO. Kd.04.8/3/pp.00.4/MTs/1225/2010</p>
+            <p class="small-bold">IJOP : 59 Tahun 2010 &nbsp;&nbsp;|&nbsp;&nbsp; NSM : 121214070048 &nbsp;&nbsp;|&nbsp;&nbsp; NPSN : 10499236</p>
+            <p style="font-style:italic;">Alamat : Panca Mukti Kec. Bagan Sinembah Raya Kab. Rokan Hilir Kode Pos. 28992</p>
+          </div>
+          <hr class="hr-thick"><hr class="hr-thin">
+
+          <div class="doc-title">
+            <h3>REKAPITULASI ABSENSI PESERTA UJIAN</h3>
+            <p>Kelas: <strong>${kelas}</strong></p>
+          </div>
+
+          <table class="rekap">
+            <thead>
+              <tr>
+                <th style="width:30px;">No</th>
+                <th style="text-align:left; min-width:120px;">Nama Siswa</th>
+                <th style="width:70px;">NIS</th>
+                ${subjectHeaders}
+                <th style="width:25px; background:#dcfce7;">H</th>
+                <th style="width:25px; background:#fef3c7;">S</th>
+                <th style="width:25px; background:#dbeafe;">I</th>
+                <th style="width:25px; background:#fecaca;">A</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+
+          <div class="legend">
+            <strong>Keterangan:</strong>
+            <span style="color:#16a34a;">H = Hadir</span>
+            <span style="color:#d97706;">S = Sakit</span>
+            <span style="color:#2563eb;">I = Izin</span>
+            <span style="color:#dc2626;">A = Alpa</span>
+          </div>
+
+          <div class="ttd-container">
+            <div class="ttd-right">
+              <p style="font-size:11px;">Panca Mukti, ${tanggalCetak}</p>
+              <p style="font-size:11px; font-weight:bold;">Kepala Madrasah</p>
+              <div class="ttd-line">${kepsek ? '<strong style="text-decoration:underline;">' + kepsek + '</strong>' : '( _________________________ )'}</div>
+              <p class="ttd-nip">NIP. ${nip || ''}</p>
+            </div>
+            <div style="clear:both;"></div>
+          </div>
+        </body></html>`;
+
+        Swal.close();
+
+        const printWin = window.open('', '_blank', 'width=1100,height=800');
+        printWin.document.write(html);
+        printWin.document.close();
+
+        Swal.fire({
+          icon: 'success',
+          title: 'Berhasil!',
+          html: '<p class="text-sm">Rekap absensi <strong>' + kelas + '</strong> (' + subjects.length + ' mapel, ' + students.length + ' siswa) telah dibuka.</p><p class="text-xs text-slate-400 mt-1">Gunakan Ctrl+P untuk mencetak.</p>',
+          confirmButtonColor: '#dc2626'
+        });
+      });
+    }).catch(err => {
+      Swal.fire('Error', 'Gagal: ' + err.message, 'error');
+    });
+  });
+}
+
 function renderERaport(container) {
 
   // --- Mata Pelajaran Templates ---
@@ -11129,6 +11399,16 @@ function renderERaport(container) {
     return 'D';
   }
 
+  // --- Auto Deskripsi berdasarkan Predikat Pengetahuan ---
+  function generateDeskripsi(nilai, mapel) {
+    const predikat = getPredikat(nilai);
+    if (predikat === '-') return '-';
+    if (predikat === 'A') return 'Ananda menunjukkan penguasaan yang sangat baik pada mata pelajaran ' + mapel + '.';
+    if (predikat === 'B') return 'Ananda menunjukkan penguasaan yang baik pada mata pelajaran ' + mapel + '.';
+    if (predikat === 'C') return 'Ananda menunjukkan penguasaan yang cukup pada mata pelajaran ' + mapel + '.';
+    return 'Ananda perlu bimbingan lebih lanjut pada mata pelajaran ' + mapel + '.';
+  }
+
   // --- Render Page HTML ---
   container.innerHTML = `
     <div class="fade-in w-full space-y-6">
@@ -11141,6 +11421,9 @@ function renderERaport(container) {
             </h2>
             <p class="text-sm text-slate-500 mt-1">Generate raport siswa format Kemdikbud / Kemenag</p>
           </div>
+          <button onclick="eraportBulkPrint()" class="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-emerald-500/20 transition flex items-center gap-2 transform active:scale-95">
+            <i class="fas fa-print"></i> Cetak Massal
+          </button>
         </div>
       </div>
 
@@ -11320,17 +11603,20 @@ function renderERaport(container) {
       database.ref('Nilai_Praktek/' + selectedClass + '/' + studentId).once('value'),
       database.ref('Exams').once('value'),
       database.ref('Master_Data').once('value'),
-      database.ref('E_Raport/' + selectedClass + '/' + safeKey).once('value') // all students for ranking
-    ]).then(([snapRaport, snapResponses, snapPraktek, snapExams, snapMaster, snapAllRaport]) => {
+      database.ref('E_Raport/' + selectedClass + '/' + safeKey).once('value'), // all students for ranking
+      database.ref('E_Raport/' + selectedClass + '/' + safeKey + '/_shared').once('value') // shared TTD & catatan
+    ]).then(([snapRaport, snapResponses, snapPraktek, snapExams, snapMaster, snapAllRaport, snapShared]) => {
       const saved = snapRaport.val() || {};
+      const shared = snapShared.val() || {};
       const savedNilai = saved.nilai || {};
       const savedSikap = saved.sikap || {};
       const savedKehadiran = saved.kehadiran || {};
       const savedEkstra = saved.ekstra || [];
       const savedPrestasi = saved.prestasi || [];
-      const savedCatatan = saved.catatan || '';
-      const savedTtd = saved.ttd || {};
+      const savedCatatan = saved.catatan || shared.catatan || '';
+      const savedTtd = (saved.ttd && saved.ttd.waliKelas) ? saved.ttd : (shared.ttd || {});
       const savedCustomMapel = saved.customMapel || [];
+      const sharedCatatan = shared.catatan || '';
 
       // Get mapel list from Master_Data
       const masterVal = snapMaster.val() || {};
@@ -11403,12 +11689,18 @@ function renderERaport(container) {
         const avgList = [];
         Object.keys(allStudentsData).forEach(sid => {
           const sn = allStudentsData[sid].nilai || {};
-          let sTotal = 0, sCount = 0;
+          const subjectAvgs = [];
           Object.values(sn).forEach(v => {
-            if (v.pengetahuan !== undefined && v.pengetahuan !== '' && !isNaN(v.pengetahuan)) { sTotal += Number(v.pengetahuan); sCount++; }
-            if (v.keterampilan !== undefined && v.keterampilan !== '' && !isNaN(v.keterampilan)) { sTotal += Number(v.keterampilan); sCount++; }
+            const hasP = v.pengetahuan !== undefined && v.pengetahuan !== '' && !isNaN(v.pengetahuan);
+            const hasK = v.keterampilan !== undefined && v.keterampilan !== '' && !isNaN(v.keterampilan);
+            if (hasP || hasK) {
+              let subTotal = 0, subCount = 0;
+              if (hasP) { subTotal += Number(v.pengetahuan); subCount++; }
+              if (hasK) { subTotal += Number(v.keterampilan); subCount++; }
+              subjectAvgs.push(subTotal / subCount);
+            }
           });
-          const avg = sCount > 0 ? sTotal / sCount : 0;
+          const avg = subjectAvgs.length > 0 ? subjectAvgs.reduce((a, b) => a + b, 0) / subjectAvgs.length : 0;
           avgList.push({ id: sid, avg });
         });
         avgList.sort((a, b) => b.avg - a.avg);
@@ -11430,7 +11722,7 @@ function renderERaport(container) {
 
       // Add custom mapel (saved from previous session)
       if (savedCustomMapel.length > 0) {
-        nilaiRows += '<tr><td colspan="7" class="group-header"><i class="fas fa-plus-square mr-1"></i> Mata Pelajaran Tambahan</td></tr>';
+        nilaiRows += '<tr><td colspan="8" class="group-header"><i class="fas fa-plus-square mr-1"></i> Mata Pelajaran Tambahan</td></tr>';
         savedCustomMapel.forEach(mapel => {
           counter++;
           const sv = mergedNilai[mapel] || savedNilai[mapel] || {};
@@ -11491,6 +11783,7 @@ function renderERaport(container) {
                     <th style="width:65px;">Pred.</th>
                     <th style="width:85px;">Keterampilan</th>
                     <th style="width:65px;">Pred.</th>
+                    <th style="width:65px;">Total</th>
                     <th style="min-width:180px;">Deskripsi</th>
                   </tr>
                 </thead>
@@ -11504,11 +11797,12 @@ function renderERaport(container) {
                     <td style="text-align:center; color:#4338ca;">${getPredikat(rataP)}</td>
                     <td style="text-align:center; color:#4338ca;">${rataK}</td>
                     <td style="text-align:center; color:#4338ca;">${getPredikat(rataK)}</td>
+                    <td style="text-align:center; color:#4338ca; font-size:1rem;">${rataTotal}</td>
                     <td></td>
                   </tr>
                   <tr style="background:#f0fdf4; font-weight:700;">
                     <td colspan="2" style="text-align:right; padding:10px 12px;">Ranking</td>
-                    <td colspan="5" style="text-align:center; color:#16a34a; font-size:1rem;">${ranking}</td>
+                    <td colspan="6" style="text-align:center; color:#16a34a; font-size:1rem;">${ranking}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -11585,7 +11879,17 @@ function renderERaport(container) {
           <!-- SECTION: Catatan Wali Kelas -->
           <div class="eraport-section">
             <div class="eraport-section-title"><i class="fas fa-comment-dots text-cyan-500"></i> Catatan Wali Kelas</div>
-            <textarea id="eraport-catatan" rows="3" class="w-full border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Tuliskan catatan wali kelas untuk siswa ini...">${savedCatatan}</textarea>
+            <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3">
+              <label class="block text-[10px] font-bold text-amber-700 uppercase mb-1"><i class="fas fa-star mr-1"></i> Catatan Default (berlaku untuk semua siswa di kelas ini)</label>
+              <div class="flex gap-2">
+                <textarea id="eraport-catatan-default" rows="2" class="flex-1 border border-amber-300 rounded-lg px-3 py-2 text-sm text-slate-700 focus:ring-2 focus:ring-amber-500 outline-none bg-white" placeholder="Tulis catatan default untuk semua siswa...">${sharedCatatan}</textarea>
+                <button onclick="document.getElementById('eraport-catatan').value = document.getElementById('eraport-catatan-default').value" class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-xs font-bold shadow transition flex items-center gap-1 shrink-0 self-end transform active:scale-95" title="Terapkan catatan default ke siswa ini">
+                  <i class="fas fa-arrow-down"></i> Terapkan
+                </button>
+              </div>
+              <p class="text-[10px] text-amber-600 mt-1"><i class="fas fa-info-circle mr-1"></i>Catatan default otomatis tersimpan saat klik Simpan dan akan terisi otomatis untuk siswa yang belum memiliki catatan.</p>
+            </div>
+            <textarea id="eraport-catatan" rows="3" class="w-full border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Catatan khusus untuk siswa ini...">${savedCatatan}</textarea>
           </div>
 
           <!-- SECTION: Tanda Tangan -->
@@ -11644,6 +11948,15 @@ function renderERaport(container) {
           const kPred = row.querySelector('.eraport-k-pred');
           if (pInput && pPred) pPred.textContent = getPredikat(pInput.value);
           if (kInput && kPred) kPred.textContent = getPredikat(kInput.value);
+          const totalCell = row.querySelector('.eraport-total');
+          if (totalCell) {
+            const pV = pInput && pInput.value !== '' && !isNaN(pInput.value) ? Number(pInput.value) : null;
+            const kV = kInput && kInput.value !== '' && !isNaN(kInput.value) ? Number(kInput.value) : null;
+            if (pV !== null && kV !== null) totalCell.textContent = ((pV + kV) / 2).toFixed(1);
+            else if (pV !== null) totalCell.textContent = pV.toFixed(1);
+            else if (kV !== null) totalCell.textContent = kV.toFixed(1);
+            else totalCell.textContent = '-';
+          }
         });
       });
 
@@ -11663,6 +11976,12 @@ function renderERaport(container) {
   // --- Helper: Build Nilai Row ---
   function buildNilaiRow(no, mapel, pVal, kVal, desc, isCustom) {
     const removeBtn = isCustom ? `<span class="eraport-btn-remove" style="cursor:pointer; color:#ef4444; margin-left:4px;" onclick="this.closest('tr').remove()" title="Hapus mapel"><i class="fas fa-times-circle"></i></span>` : '';
+    const pNum = (pVal !== '' && !isNaN(pVal)) ? Number(pVal) : null;
+    const kNum = (kVal !== '' && !isNaN(kVal)) ? Number(kVal) : null;
+    let total = '-';
+    if (pNum !== null && kNum !== null) total = ((pNum + kNum) / 2).toFixed(1);
+    else if (pNum !== null) total = pNum.toFixed(1);
+    else if (kNum !== null) total = kNum.toFixed(1);
     return `<tr data-custom="${isCustom ? 'true' : 'false'}">
       <td class="no-cell">${no}</td>
       <td class="mapel-cell">${mapel}${removeBtn}</td>
@@ -11670,6 +11989,7 @@ function renderERaport(container) {
       <td class="predikat-cell eraport-p-pred">${getPredikat(pVal)}</td>
       <td><input type="number" class="eraport-nilai-input eraport-k-input" data-mapel="${mapel}" data-type="keterampilan" value="${kVal}" min="0" max="100" placeholder="—"></td>
       <td class="predikat-cell eraport-k-pred">${getPredikat(kVal)}</td>
+      <td class="predikat-cell eraport-total" style="font-weight:bold; color:#4338ca;">${total}</td>
       <td><textarea class="eraport-desc-input" data-mapel="${mapel}" rows="2" placeholder="Deskripsi capaian...">${desc}</textarea></td>
     </tr>`;
   }
@@ -11736,7 +12056,7 @@ function renderERaport(container) {
       const hasCustomHeader = tbody.querySelector('tr[data-custom-header]');
       let newRowHtml = '';
       if (!hasCustomHeader) {
-        newRowHtml += '<tr data-custom-header="true"><td colspan="7" class="group-header"><i class="fas fa-plus-square" style="margin-right:4px;"></i> Mata Pelajaran Tambahan</td></tr>';
+        newRowHtml += '<tr data-custom-header="true"><td colspan="8" class="group-header"><i class="fas fa-plus-square" style="margin-right:4px;"></i> Mata Pelajaran Tambahan</td></tr>';
       }
       newRowHtml += buildNilaiRow(no, mapelName, '', '', '', true);
       tbody.insertAdjacentHTML('beforeend', newRowHtml);
@@ -11753,6 +12073,15 @@ function renderERaport(container) {
           const kPred = row.querySelector('.eraport-k-pred');
           if (pInput && pPred) pPred.textContent = getPredikat(pInput.value);
           if (kInput && kPred) kPred.textContent = getPredikat(kInput.value);
+          const totalCell = row.querySelector('.eraport-total');
+          if (totalCell) {
+            const pV = pInput && pInput.value !== '' && !isNaN(pInput.value) ? Number(pInput.value) : null;
+            const kV = kInput && kInput.value !== '' && !isNaN(kInput.value) ? Number(kInput.value) : null;
+            if (pV !== null && kV !== null) totalCell.textContent = ((pV + kV) / 2).toFixed(1);
+            else if (pV !== null) totalCell.textContent = pV.toFixed(1);
+            else if (kV !== null) totalCell.textContent = kV.toFixed(1);
+            else totalCell.textContent = '-';
+          }
         });
       });
       Swal.fire({ toast: true, position: 'top-end', icon: 'success', title: 'Mapel "' + mapelName + '" ditambahkan', showConfirmButton: false, timer: 2000 });
@@ -11854,8 +12183,15 @@ function renderERaport(container) {
       const safeKey = semester + '_' + tahun.replace(/\//g, '-');
       const dataToSave = { nilai, sikap, kehadiran, ekstra, prestasi, catatan, ttd, customMapel, lastUpdated: new Date().toISOString() };
 
-      database.ref('E_Raport/' + selectedClass + '/' + safeKey + '/' + studentId).set(dataToSave).then(() => {
-        Swal.fire({ icon: 'success', title: 'Tersimpan!', text: 'Data raport berhasil disimpan.', confirmButtonColor: '#4f46e5' });
+      // Also save TTD and default catatan to shared class-level path
+      const catatanDefault = (document.getElementById('eraport-catatan-default') && document.getElementById('eraport-catatan-default').value.trim()) || '';
+      const sharedData = { ttd, catatan: catatanDefault, lastUpdated: new Date().toISOString() };
+
+      Promise.all([
+        database.ref('E_Raport/' + selectedClass + '/' + safeKey + '/' + studentId).set(dataToSave),
+        database.ref('E_Raport/' + selectedClass + '/' + safeKey + '/_shared').set(sharedData)
+      ]).then(() => {
+        Swal.fire({ icon: 'success', title: 'Tersimpan!', text: 'Data raport & data bersama berhasil disimpan.', confirmButtonColor: '#4f46e5' });
       }).catch(err => {
         Swal.fire('Error', 'Gagal menyimpan: ' + err.message, 'error');
       });
@@ -11972,14 +12308,14 @@ function renderERaport(container) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8">
       <title>E-Raport ${data.studentName} - ${data.selectedClass}</title>
       <style>
-        @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; }
+        @page { size: A4 portrait; margin: 10mm; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Times New Roman', Times, serif; font-size: 12px; color: #000; padding: 10mm; line-height: 1.5; position: relative; }
         .watermark { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; background-image: url('https://image2url.com/r2/default/images/1772491801108-ee0f4d76-4109-4d18-8f79-ec46bc5aeec2.jpeg'); background-repeat: no-repeat; background-position: center center; background-size: cover; opacity: 0.08; }
         .raport-content { position: relative; z-index: 1; }
         .kop { text-align: center; position: relative; padding: 0 100px; margin-bottom: 5px; }
-        .kop .logo-left { position: absolute; left: 10px; top: 0; width: 80px; height: auto; }
-        .kop .logo-right { position: absolute; right: 10px; top: 0; width: 80px; height: auto; }
+        .kop .logo-left { position: absolute; left: 10px; top: 0; width: 100px; height: auto; }
+        .kop .logo-right { position: absolute; right: 10px; top: 0; width: 100px; height: auto; }
         .kop h1 { font-size: 14px; font-weight: bold; margin-bottom: 2px; }
         .kop h2 { font-size: 18px; font-weight: bold; margin-bottom: 2px; }
         .kop p { font-size: 10px; margin: 1px 0; }
@@ -12014,13 +12350,10 @@ function renderERaport(container) {
         .ttd-line { margin-top: 70px; border-top: 1px solid #000; display: inline-block; min-width: 200px; padding-top: 3px; }
         .ttd-nip { font-size: 9px; color: #555; margin-top: 2px; }
         @media print {
-          @page {
-          margin: 0; 
-        }
-          body { 
-            margin: 0;
-            padding: 1cm; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-          .watermark { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; opacity: 0.08; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+          @page { size: A4 portrait; margin: 10mm; }
+          body { padding: 10mm; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+          .raport-content { padding: 0; }
+          .watermark { position: fixed; top: -10mm; left: -10mm; width: calc(100% + 20mm); height: calc(100% + 20mm); z-index: -1; opacity: 0.08; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
         }
       </style>
     </head><body>
@@ -12081,11 +12414,13 @@ function renderERaport(container) {
         <thead>
           <tr>
             <th style="width:30px;">No</th>
-            <th style="text-align:left; min-width:180px;">Mata Pelajaran</th>
-            <th style="width:70px;">Pengetahuan</th>
-            <th style="width:50px;">Pred.</th>
-            <th style="width:70px;">Keterampilan</th>
-            <th style="width:50px;">Pred.</th>
+            <th style="text-align:left; min-width:150px;">Mata Pelajaran</th>
+            <th style="width:60px;">Pengetahuan</th>
+            <th style="width:40px;">Pred.</th>
+            <th style="width:60px;">Keterampilan</th>
+            <th style="width:40px;">Pred.</th>
+            <th style="width:45px;">Total</th>
+            <th style="min-width:150px;">Deskripsi</th>
           </tr>
         </thead>
         <tbody>
@@ -12098,10 +12433,12 @@ function renderERaport(container) {
             <td class="bold">${getPredikat(printRataP)}</td>
             <td class="bold">${printRataK}</td>
             <td class="bold">${getPredikat(printRataK)}</td>
+            <td class="bold" style="color:#1e40af;">${(pCount > 0 || kCount > 0) ? ((pTotal/Math.max(pCount,1) + kTotal/Math.max(kCount,1)) / ((pCount > 0 ? 1 : 0) + (kCount > 0 ? 1 : 0))).toFixed(1) : '-'}</td>
+            <td></td>
           </tr>
           <tr style="font-weight:bold;">
             <td colspan="2" style="text-align:right; padding:5px 8px;">Ranking</td>
-            <td colspan="4" style="text-align:center;">${printRanking}</td>
+            <td colspan="6" style="text-align:center;">${printRanking}</td>
           </tr>
         </tfoot>
       </table>
@@ -12161,6 +12498,13 @@ function renderERaport(container) {
   function buildPrintNilaiRow(no, mapel, sv) {
     const p = sv.pengetahuan !== undefined && sv.pengetahuan !== '' ? sv.pengetahuan : '-';
     const k = sv.keterampilan !== undefined && sv.keterampilan !== '' ? sv.keterampilan : '-';
+    const desc = generateDeskripsi(p, mapel);
+    const pNum = (p !== '-' && !isNaN(p)) ? Number(p) : null;
+    const kNum = (k !== '-' && !isNaN(k)) ? Number(k) : null;
+    let total = '-';
+    if (pNum !== null && kNum !== null) total = ((pNum + kNum) / 2).toFixed(1);
+    else if (pNum !== null) total = pNum.toFixed(1);
+    else if (kNum !== null) total = kNum.toFixed(1);
     return `<tr>
       <td class="center">${no}</td>
       <td>${mapel}</td>
@@ -12168,6 +12512,8 @@ function renderERaport(container) {
       <td class="bold">${getPredikat(p)}</td>
       <td class="bold">${k}</td>
       <td class="bold">${getPredikat(k)}</td>
+      <td class="bold" style="color:#1e40af;">${total}</td>
+      <td style="font-size:10px; text-align:left;">${desc}</td>
     </tr>`;
   }
 
@@ -12201,6 +12547,217 @@ function renderERaport(container) {
       printWin.print();
       printWin.onafterprint = () => printWin.close();
     };
+  };
+
+  // ============================================
+  //  CETAK MASSAL (BULK PRINT)
+  // ============================================
+  window.eraportBulkPrint = () => {
+    const selectedClass = document.getElementById('eraport-class').value;
+    const semester = document.getElementById('eraport-semester').value;
+    const tahun = document.getElementById('eraport-tahun').value;
+    const format = document.getElementById('eraport-format').value;
+
+    if (!selectedClass) {
+      Swal.fire('Peringatan', 'Pilih kelas terlebih dahulu.', 'warning');
+      return;
+    }
+
+    const safeKey = semester + '_' + tahun.replace(/\//g, '-');
+
+    Swal.fire({
+      title: '<i class="fas fa-print"></i> Cetak Massal E-Raport',
+      html: '<p class="text-sm text-slate-600">Mencetak raport <strong>seluruh siswa</strong> kelas <strong>' + selectedClass + '</strong><br>Semester <strong>' + semester + '</strong> TA <strong>' + tahun + '</strong></p><p class="text-xs text-slate-400 mt-2">Pastikan data raport semua siswa sudah disimpan.</p>',
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: '<i class="fas fa-print mr-1"></i> Cetak Sekarang',
+      cancelButtonText: 'Batal',
+      confirmButtonColor: '#059669',
+      cancelButtonColor: '#64748b',
+    }).then(result => {
+      if (!result.isConfirmed) return;
+
+      Swal.fire({
+        title: 'Memproses...',
+        html: '<div class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Mengambil data raport seluruh siswa...</div>',
+        allowOutsideClick: false,
+        showConfirmButton: false,
+        didOpen: () => { Swal.showLoading(); }
+      });
+
+      // Fetch all needed data
+      const ensureUsers = allUsersData.length > 0
+        ? Promise.resolve()
+        : database.ref('Users').once('value').then(snap => {
+            const users = [];
+            snap.forEach(child => {
+              const raw = child.val();
+              users.push({ _key: child.key, id: raw.UserID || '', username: raw.Username || '', role: raw.Role || 'Siswa', class: raw.Class || '-' });
+            });
+            allUsersData = users;
+          });
+
+      ensureUsers.then(() => {
+        const students = allUsersData
+          .filter(u => (u.role || 'Siswa') === 'Siswa' && u.class === selectedClass)
+          .sort((a, b) => a.username.localeCompare(b.username));
+
+        if (students.length === 0) {
+          Swal.fire('Kosong', 'Tidak ada siswa di kelas ' + selectedClass, 'info');
+          return;
+        }
+
+        return Promise.all([
+          database.ref('E_Raport/' + selectedClass + '/' + safeKey).once('value'),
+          database.ref('Master_Data').once('value')
+        ]).then(([snapAllRaport, snapMaster]) => {
+          const allRaportData = snapAllRaport.val() || {};
+          const sharedBulk = allRaportData._shared || {};
+          const masterVal = snapMaster.val() || {};
+          const dbSubjects = masterVal.subjects || [];
+          const isKemenag = format === 'kemenag';
+
+          // Determine mapel list
+          let allMapel = dbSubjects.length > 0 ? [...dbSubjects] : (isKemenag ? [] : [...mapelKemdikbud]);
+          if (isKemenag && dbSubjects.length === 0) {
+            mapelKemenag.forEach(g => g.items.forEach(m => { if (!allMapel.includes(m)) allMapel.push(m); }));
+          }
+
+          // Compute rankings (per-subject average for fairness)
+          const avgList = [];
+          Object.keys(allRaportData).filter(sid => sid !== '_shared').forEach(sid => {
+            const sn = allRaportData[sid].nilai || {};
+            const subjectAvgs = [];
+            Object.values(sn).forEach(v => {
+              const hasP = v.pengetahuan !== undefined && v.pengetahuan !== '' && !isNaN(v.pengetahuan);
+              const hasK = v.keterampilan !== undefined && v.keterampilan !== '' && !isNaN(v.keterampilan);
+              if (hasP || hasK) {
+                let subTotal = 0, subCount = 0;
+                if (hasP) { subTotal += Number(v.pengetahuan); subCount++; }
+                if (hasK) { subTotal += Number(v.keterampilan); subCount++; }
+                subjectAvgs.push(subTotal / subCount);
+              }
+            });
+            avgList.push({ id: sid, avg: subjectAvgs.length > 0 ? subjectAvgs.reduce((a, b) => a + b, 0) / subjectAvgs.length : 0 });
+          });
+          avgList.sort((a, b) => b.avg - a.avg);
+
+          // Generate raport for each student
+          const allContentSections = [];
+          let processedCount = 0;
+
+          students.forEach(student => {
+            const saved = allRaportData[student.id] || {};
+            const savedNilai = saved.nilai || {};
+            const savedCustomMapel = saved.customMapel || [];
+
+            // Merge nilai
+            const mergedNilai = {};
+            allMapel.forEach(mapel => {
+              const sv = savedNilai[mapel] || {};
+              mergedNilai[mapel] = {
+                pengetahuan: sv.pengetahuan !== undefined && sv.pengetahuan !== '' ? sv.pengetahuan : '',
+                keterampilan: sv.keterampilan !== undefined && sv.keterampilan !== '' ? sv.keterampilan : '',
+                deskripsi: sv.deskripsi || ''
+              };
+            });
+            savedCustomMapel.forEach(mapel => {
+              if (!mergedNilai[mapel]) {
+                const sv = savedNilai[mapel] || {};
+                mergedNilai[mapel] = { pengetahuan: sv.pengetahuan || '', keterampilan: sv.keterampilan || '', deskripsi: sv.deskripsi || '' };
+              }
+            });
+
+            // Get ranking for this student
+            const myIdx = avgList.findIndex(x => x.id === student.id);
+            const ranking = myIdx >= 0 ? (myIdx + 1) + ' dari ' + avgList.length : '-';
+
+            const data = {
+              studentId: student.id,
+              studentName: student.username,
+              selectedClass: selectedClass,
+              semester: semester,
+              tahun: tahun,
+              format: format,
+              nilai: mergedNilai,
+              sikap: saved.sikap || { spiritual: 'Baik', sosial: 'Baik' },
+              kehadiran: saved.kehadiran || { sakit: 0, izin: 0, alpha: 0 },
+              ekstra: saved.ekstra || [],
+              prestasi: saved.prestasi || [],
+              catatan: saved.catatan || sharedBulk.catatan || '',
+              ttd: (saved.ttd && saved.ttd.waliKelas) ? saved.ttd : (sharedBulk.ttd || {}),
+              ranking: ranking
+            };
+
+            allContentSections.push(generateRaportHTML(data));
+            processedCount++;
+          });
+
+          if (allContentSections.length === 0) {
+            Swal.fire('Kosong', 'Tidak ada data raport yang ditemukan untuk kelas ini.', 'info');
+            return;
+          }
+
+          // Extract body content from each generated HTML and combine
+          const extractBodyContent = (html) => {
+            const match = html.match(/<body[^>]*>([\s\S]*)<\/body>/);
+            return match ? match[1] : html;
+          };
+
+          // Remove individual watermark divs to prevent opacity stacking
+          const removeWatermark = (content) => {
+            return content.replace(/<div class="watermark"><\/div>/g, '');
+          };
+
+          const combinedBodies = allContentSections.map((html, idx) => {
+            const bodyContent = removeWatermark(extractBodyContent(html));
+            const isLast = idx === allContentSections.length - 1;
+            return '<div class="student-raport" style="' + (isLast ? '' : 'page-break-after: always;') + '">' + bodyContent + '</div>';
+          }).join('\n');
+
+          // Extract styles from the first generated HTML
+          const styleMatch = allContentSections[0].match(/<style>([\s\S]*?)<\/style>/);
+          const styles = styleMatch ? styleMatch[1] : '';
+
+          const bulkHtml = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            + '<title>E-Raport Massal - ' + selectedClass + ' - ' + semester + ' ' + tahun + '</title>'
+            + '<style>' + styles + '\n'
+            + '/* Override untuk cetak massal */\n'
+            + '@page { size: A4 portrait; margin: 0 !important; }\n'
+            + 'body { padding: 0 !important; }\n'
+            + '.watermark { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; opacity: 0.08; pointer-events: none; }\n'
+            + '.student-raport { position: relative; }\n'
+            + '.student-raport .raport-content { padding: 10mm !important; }\n'
+            + '@media print {\n'
+            + '  @page { size: A4 portrait; margin: 0 !important; }\n'
+            + '  body { padding: 0 !important; }\n'
+            + '  .watermark { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; opacity: 0.08; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }\n'
+            + '  .student-raport .raport-content { padding: 10mm !important; }\n'
+            + '}\n'
+            + '</style>'
+            + '</head><body>'
+            + '<div class="watermark"></div>'
+            + combinedBodies
+            + '</body></html>';
+
+          Swal.close();
+
+          const printWin = window.open('', '_blank', 'width=900,height=800');
+          printWin.document.write(bulkHtml);
+          printWin.document.close();
+
+          Swal.fire({
+            icon: 'success',
+            title: 'Berhasil!',
+            html: '<p class="text-sm">Raport <strong>' + processedCount + ' siswa</strong> telah dibuka di tab baru.</p><p class="text-xs text-slate-400 mt-1">Gunakan Ctrl+P untuk mencetak.</p>',
+            confirmButtonColor: '#059669',
+            confirmButtonText: 'OK'
+          });
+        });
+      }).catch(err => {
+        Swal.fire('Error', 'Gagal mengambil data: ' + err.message, 'error');
+      });
+    });
   };
 
   // --- Auto-refresh form when format changes ---
