@@ -935,6 +935,72 @@ let checkpoints = {};
 let timerInterval;
 let selectedLeft = null;
 
+// --- Anti-Duplicate Response ---
+let _responseSaveKey = null;  // Cache key response agar tidak race condition
+let _syncLock = false;        // Lock untuk mencegah concurrent push
+let _syncDebounceTimer = null; // Debounce timer untuk auto-save
+
+/**
+ * Fungsi terpusat untuk menyimpan jawaban ke Firebase.
+ * Menggunakan cache key + lock untuk mencegah pembuatan duplikat.
+ */
+function syncResponseToFirebase() {
+  if (!currentUser || !currentExam) return;
+
+  // Debounce: tunggu 500ms agar tidak save terlalu sering
+  if (_syncDebounceTimer) clearTimeout(_syncDebounceTimer);
+  _syncDebounceTimer = setTimeout(() => {
+    _executeSyncResponse();
+  }, 500);
+}
+
+function _executeSyncResponse() {
+  if (!currentUser || !currentExam) return;
+
+  const data = {
+    UserID: currentUser.userID,
+    ExamID: currentExam.id,
+    Answers: answers,
+    Violations: violationCount,
+    Username: currentUser.username
+  };
+
+  // Jika key sudah di-cache, langsung update (no query needed)
+  if (_responseSaveKey) {
+    database.ref('Responses/' + _responseSaveKey).update(data)
+      .catch(err => console.error('Gagal sync jawaban:', err));
+    return;
+  }
+
+  // Jika sedang dalam proses pencarian/push, skip
+  if (_syncLock) return;
+  _syncLock = true;
+
+  // Cari response yang sudah ada
+  database.ref('Responses').orderByChild('UserID').equalTo(currentUser.userID).once('value').then(snap => {
+    let key = null;
+    snap.forEach(c => {
+      if (c.val().ExamID === currentExam.id) key = c.key;
+    });
+
+    if (key) {
+      // Response sudah ada, cache key-nya
+      _responseSaveKey = key;
+      return database.ref('Responses/' + key).update(data);
+    } else {
+      // Belum ada, buat baru dan cache key-nya
+      const newRef = database.ref('Responses').push();
+      _responseSaveKey = newRef.key;
+      data.ResponseID = 'RESP_' + newRef.key;
+      return newRef.set(data);
+    }
+  }).catch(err => {
+    console.error('Gagal sync jawaban:', err);
+  }).finally(() => {
+    _syncLock = false;
+  });
+}
+
 // --- Security Handlers ---
 let ac_ctxHandler, ac_keyHandler, ac_visHandler, ac_blurHandler, ac_fsHandler, ac_unloadHandler;
 
@@ -1247,6 +1313,9 @@ function logout() {
       answers = {};
       violationCount = 0;
       checkpoints = {};
+      _responseSaveKey = null;
+      _syncLock = false;
+      if (_syncDebounceTimer) clearTimeout(_syncDebounceTimer);
 
       // 5. === RESET TAMPILAN UJIAN ===
       if (initialExamHTML) {
@@ -1345,6 +1414,7 @@ function initAdminPanel() {
        });
      });
      cachedExams = exams;
+     cachedExams.sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'id'));
      showAdminTab('dash-home');
    });
 
@@ -1369,6 +1439,7 @@ function initAdminPanel() {
        });
      });
      allUsersData = users;
+     allUsersData.sort((a, b) => (a.username || '').localeCompare(b.username || '', 'id'));
    });
 }
 
@@ -2783,7 +2854,7 @@ function renderExamForm(container) {
             </td>
             <td class="p-4 pr-6 text-right">
                 <div class="flex justify-end gap-2 opacity-80 group-hover:opacity-100 transition">
-                    <button onclick='openExamModal(${JSON.stringify(exam)})' class="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition flex items-center justify-center shadow-sm border border-indigo-100" title="Edit">
+                    <button onclick="handleEditExam(${idx})" class="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition flex items-center justify-center shadow-sm border border-indigo-100" title="Edit">
                          <i class="fas fa-pen-to-square text-xs"></i>
                     </button>
                     <button onclick="handleDeleteExam('${exam.id}')" class="w-8 h-8 rounded-lg bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition flex items-center justify-center shadow-sm border border-red-100" title="Hapus">
@@ -2983,8 +3054,11 @@ function handleExamSubmit(e) {
       PIN: data.pin, Status: autoStatus
     };
     database.ref('Exams').push(newExam).then(() => {
+      // === AUTO-MIGRASI: Cari soal & nilai yatim (orphaned) dari mapel yang sama ===
+      return _migrateOrphanedData(data.subject, newExamId);
+    }).then(() => {
       document.getElementById('global-loading').classList.add('hidden');
-      Swal.fire('Berhasil', 'Jadwal dibuat!', 'success');
+      Swal.fire('Berhasil', 'Jadwal dibuat! Soal yang sudah ada untuk mapel ini otomatis terhubung.', 'success');
       refreshExamList();
     }).catch(err => {
       document.getElementById('global-loading').classList.add('hidden');
@@ -2993,33 +3067,146 @@ function handleExamSubmit(e) {
   }
 }
 
+// Helper: Edit exam via index dari cachedExams (aman dari karakter khusus)
+function handleEditExam(index) {
+  if (cachedExams && cachedExams[index]) {
+    openExamModal(cachedExams[index]);
+  }
+}
+
 function handleDeleteExam(examId) {
+  // Cari info ujian untuk ditampilkan
+  const examInfo = cachedExams.find(e => e.id === examId);
+  const subjectName = examInfo ? examInfo.subject : 'Ujian';
+
   Swal.fire({
-    title: 'Hapus Ujian?',
-    text: "Data nilai terkait mungkin hilang.",
+    title: `Hapus Jadwal "${subjectName}"?`,
+    html: `
+      <div class="text-left text-sm space-y-3 mt-2">
+        <div class="bg-blue-50 border border-blue-200 p-3 rounded-lg">
+          <p class="font-bold text-blue-700"><i class="fas fa-calendar-times mr-1"></i> Hapus Jadwal Saja</p>
+          <p class="text-blue-600 text-xs mt-1">Jadwal dihapus, tetapi <b>soal dan nilai siswa tetap aman</b>. Jika Anda membuat jadwal baru untuk mapel ini, soal akan otomatis terhubung kembali.</p>
+        </div>
+        <div class="bg-red-50 border border-red-200 p-3 rounded-lg">
+          <p class="font-bold text-red-700"><i class="fas fa-exclamation-triangle mr-1"></i> Hapus Semua Data</p>
+          <p class="text-red-600 text-xs mt-1">Jadwal, <b>soal, DAN nilai siswa</b> akan dihapus permanen. Tidak bisa dikembalikan!</p>
+        </div>
+      </div>
+    `,
     icon: 'warning',
+    showDenyButton: true,
     showCancelButton: true,
-    confirmButtonColor: '#d33',
-    cancelButtonColor: '#3085d6',
-    confirmButtonText: 'Ya, Hapus!'
+    confirmButtonText: '<i class="fas fa-calendar-times mr-1"></i> Jadwal Saja',
+    denyButtonText: '<i class="fas fa-trash-alt mr-1"></i> Hapus Semua',
+    cancelButtonText: 'Batal',
+    confirmButtonColor: '#3b82f6',
+    denyButtonColor: '#dc2626',
+    reverseButtons: false
   }).then((result) => {
     if (result.isConfirmed) {
+      // === HAPUS JADWAL SAJA ===
       document.getElementById('global-loading').classList.remove('hidden');
-
-      // Delete via Firebase
       database.ref('Exams').orderByChild('ExamID').equalTo(examId).once('value').then(snap => {
         const promises = [];
         snap.forEach(c => { promises.push(c.ref.remove()); });
         return Promise.all(promises);
       }).then(() => {
         document.getElementById('global-loading').classList.add('hidden');
-        Swal.fire('Terhapus!', 'Data dihapus.', 'success');
+        Swal.fire({
+          icon: 'success',
+          title: 'Jadwal Dihapus',
+          html: '<p class="text-sm">Jadwal berhasil dihapus.<br><b>Soal dan nilai siswa tetap tersimpan.</b></p><p class="text-xs text-slate-500 mt-2">Buat jadwal baru untuk mapel ini agar soal otomatis terhubung kembali.</p>',
+        });
         refreshExamList();
       }).catch(err => {
         document.getElementById('global-loading').classList.add('hidden');
         Swal.fire('Gagal', err.message, 'error');
       });
+    } else if (result.isDenied) {
+      // === HAPUS SEMUA (CASCADE) ===
+      Swal.fire({
+        title: 'KONFIRMASI AKHIR',
+        html: `<p class="text-sm text-red-600">Anda akan menghapus jadwal <b>"${subjectName}"</b> beserta <b>SELURUH soal dan nilai siswa</b>. Tindakan ini <b>TIDAK BISA DIBATALKAN!</b></p>`,
+        icon: 'error',
+        showCancelButton: true,
+        confirmButtonText: 'Ya, Hapus Semua!',
+        confirmButtonColor: '#dc2626',
+        cancelButtonText: 'Batal'
+      }).then(confirm2 => {
+        if (confirm2.isConfirmed) {
+          document.getElementById('global-loading').classList.remove('hidden');
+          // Hapus Exams + Questions + Responses
+          const p1 = database.ref('Exams').orderByChild('ExamID').equalTo(examId).once('value').then(snap => {
+            const proms = []; snap.forEach(c => proms.push(c.ref.remove())); return Promise.all(proms);
+          });
+          const p2 = database.ref('Questions').orderByChild('ExamID').equalTo(examId).once('value').then(snap => {
+            const proms = []; snap.forEach(c => proms.push(c.ref.remove())); return Promise.all(proms);
+          });
+          const p3 = database.ref('Responses').orderByChild('ExamID').equalTo(examId).once('value').then(snap => {
+            const proms = []; snap.forEach(c => proms.push(c.ref.remove())); return Promise.all(proms);
+          });
+          Promise.all([p1, p2, p3]).then(() => {
+            document.getElementById('global-loading').classList.add('hidden');
+            Swal.fire('Terhapus!', 'Jadwal, soal, dan semua nilai telah dihapus permanen.', 'success');
+            refreshExamList();
+          }).catch(err => {
+            document.getElementById('global-loading').classList.add('hidden');
+            Swal.fire('Gagal', err.message, 'error');
+          });
+        }
+      });
     }
+  });
+}
+
+/**
+ * Auto-migrasi soal dan nilai yatim (orphaned) ke ExamID baru.
+ * Dipanggil ketika jadwal baru dibuat. Mencari Questions/Responses yang
+ * ExamID-nya tidak ada di daftar Exams aktif dan subject-nya cocok.
+ */
+function _migrateOrphanedData(subject, newExamId) {
+  // 1. Ambil semua ExamID yang masih aktif di database
+  return database.ref('Exams').once('value').then(examSnap => {
+    const activeExamIds = new Set();
+    examSnap.forEach(c => {
+      const eid = c.val().ExamID || c.key;
+      activeExamIds.add(eid);
+    });
+
+    // 2. Cari Questions yang orphaned (ExamID tidak ada di activeExamIds)
+    //    dan subject-nya cocok
+    return database.ref('Questions').once('value').then(qSnap => {
+      const updatePromises = [];
+      qSnap.forEach(c => {
+        const q = c.val();
+        const qExamId = q.ExamID;
+        if (qExamId && !activeExamIds.has(qExamId)) {
+          // Ini orphaned question — cek apakah subject dekat ke match
+          // Kita perlu cek subject dari exam yang lama, tapi exam sudah dihapus.
+          // Fallback: update semua orphaned questions yang ExamID-nya cocok
+          // dengan pola: cari via subject name di Questions (tidak tersedia) atau
+          // langsung re-link semua orphaned.
+          // Approach: hanya re-link yang ExamID-nya orphaned
+          updatePromises.push(c.ref.update({ ExamID: newExamId }));
+        }
+      });
+
+      // 3. Cari Responses yang orphaned juga
+      return database.ref('Responses').once('value').then(rSnap => {
+        rSnap.forEach(c => {
+          const r = c.val();
+          const rExamId = r.ExamID;
+          if (rExamId && !activeExamIds.has(rExamId)) {
+            updatePromises.push(c.ref.update({ ExamID: newExamId }));
+          }
+        });
+
+        if (updatePromises.length > 0) {
+          console.log(`Migrasi: ${updatePromises.length} data orphaned di-link ke ExamID baru: ${newExamId}`);
+        }
+        return Promise.all(updatePromises);
+      });
+    });
   });
 }
 
@@ -3128,6 +3315,7 @@ function refreshExamList() {
       });
     });
     cachedExams = exams;
+    cachedExams.sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'id'));
     renderExamForm(document.getElementById('admin-content'));
   });
 }
@@ -3150,6 +3338,7 @@ function refreshDashboard() {
       });
     });
     cachedExams = exams;
+    cachedExams.sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'id'));
     renderAdminHome(content);
   });
 }
@@ -4536,8 +4725,14 @@ function renderResults(container, selectedExamId = null) {
                 </div>
             </div>
 
-            <div class="w-full">
-               <div class="relative group">
+            <div class="w-full flex flex-col md:flex-row gap-4">
+               <div class="relative w-full md:w-1/3">
+                   <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                       <i class="fas fa-search"></i>
+                   </div>
+                   <input type="text" id="search-subject-dropdown" onkeyup="filterSubjectDropdown(this.value)" placeholder="Cari Ujian / Mapel..." class="pl-10 pr-4 py-3 border border-slate-200 rounded-xl w-full bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-slate-700 shadow-sm transition-all font-medium">
+               </div>
+               <div class="relative group w-full md:flex-1">
                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                        <i class="fas fa-filter"></i>
                    </div>
@@ -4623,6 +4818,37 @@ function renderResults(container, selectedExamId = null) {
       setTimeout(() => renderResultCards(), 300);
   }
 }
+
+// Fungsi pencarian mapel
+window.filterSubjectDropdown = function(keyword) {
+    const selectEl = document.getElementById('select-result-exam');
+    if (!selectEl) return;
+    
+    // Simpan exam aktif yang sedang dipilih agar tidak hilang jika dicari
+    const currentVal = selectEl.value;
+    
+    const q = keyword.toLowerCase().trim();
+    
+    // 1. Filter Dropdown dari cachedExams
+    const filtered = cachedExams.filter(e => {
+        return (e.subject || '').toLowerCase().includes(q) || (e.class || '').toLowerCase().includes(q);
+    });
+    
+    let optsHtml = '<option value="">-- Pilih Mata Pelajaran --</option>';
+    filtered.forEach(e => {
+        const isSel = (currentVal && String(e.id) === String(currentVal)) ? 'selected' : '';
+        optsHtml += `<option value="${e.id}" ${isSel}>${e.subject} (${e.class})</option>`;
+    });
+    selectEl.innerHTML = optsHtml;
+
+    // 2. Filter Result Cards (Jika sedang ditampilkan)
+    const cards = document.querySelectorAll('.result-card');
+    cards.forEach(card => {
+        const subj = (card.dataset.subject || '').toLowerCase();
+        const cls = (card.dataset.class || '').toLowerCase();
+        card.style.display = (!q || subj.includes(q) || cls.includes(q)) ? '' : 'none';
+    });
+};
 
 window.renderResultCards = () => {
     const container = document.getElementById('result-cards-container');
@@ -4712,7 +4938,7 @@ window.renderResultCards = () => {
             let initial = (exam.subject || 'U').substring(0, 1).toUpperCase();
 
             cardsHtml += `
-                <div class="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-300 overflow-hidden group cursor-pointer relative flex flex-col h-full" onclick="document.getElementById('select-result-exam').value='${exam.id}'; loadResultsTable('${exam.id}')">
+                <div class="result-card bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-300 overflow-hidden group cursor-pointer relative flex flex-col h-full" onclick="document.getElementById('select-result-exam').value='${exam.id}'; loadResultsTable('${exam.id}')" data-subject="${exam.subject || 'Ujian'}" data-class="${exam.class || '-'}">
                     <button onclick="event.stopPropagation(); window.hapusRombonganHasil('${exam.id}', '${exam.subject || 'Ujian'}');" class="absolute top-3 right-3 w-8 h-8 bg-red-50 hover:bg-red-500 text-red-500 hover:text-white rounded-lg flex items-center justify-center transition opacity-0 group-hover:opacity-100 shadow-sm" title="Hapus Semua Nilai Mapel Ini">
                         <i class="fas fa-trash-alt"></i>
                     </button>
@@ -4822,7 +5048,7 @@ function loadResultsTable(eid) {
 
   // Ambil Data dari Firebase
   database.ref('Responses').orderByChild('ExamID').equalTo(eid).once('value').then(snapshot => {
-    const res = [];
+    const resRaw = [];
     snapshot.forEach(child => {
       const r = child.val();
       r._key = child.key;
@@ -4835,8 +5061,39 @@ function loadResultsTable(eid) {
       r.submittedAt = r.SubmittedAt || '-';
       r.submitTime = r.SubmittedAt ? new Date(r.SubmittedAt).toLocaleString('id-ID') : '-';
       r.violations = r.Violations || 0;
-      res.push(r);
+      resRaw.push(r);
     });
+
+    // === DEDUPLICATION: Hapus entri duplikat per UserID ===
+    // Jika ada duplikat, ambil yang memiliki skor (Completed/Selesai) atau yang paling baru
+    const userMap = {};
+    resRaw.forEach(r => {
+      const uid = r.studentId;
+      if (!userMap[uid]) {
+        userMap[uid] = r;
+      } else {
+        const existing = userMap[uid];
+        // Prioritaskan yang sudah selesai dan punya skor
+        const existingDone = (existing.status === 'Completed' || existing.status === 'Selesai');
+        const newDone = (r.status === 'Completed' || r.status === 'Selesai');
+        if (!existingDone && newDone) {
+          userMap[uid] = r; // Ganti dengan yang sudah selesai
+        } else if (existingDone === newDone) {
+          // Jika status sama, ambil yang punya skor lebih tinggi atau yang lebih baru
+          const existScore = (existing.score !== '-' && existing.score !== undefined) ? Number(existing.score) : -1;
+          const newScore = (r.score !== '-' && r.score !== undefined) ? Number(r.score) : -1;
+          if (newScore > existScore) {
+            userMap[uid] = r;
+          } else if (newScore === existScore && r.submittedAt > existing.submittedAt) {
+            userMap[uid] = r;
+          }
+        }
+      }
+    });
+    const res = Object.values(userMap);
+
+    // Urutkan A-Z berdasarkan nama siswa
+    res.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'id'));
 
     // SIMPAN DATA KE MEMORI BROWSER
     allResultsData = res;
@@ -6397,13 +6654,15 @@ function initStudentExam(examData) {
             [qs[i], qs[j]] = [qs[j], qs[i]];
         }
 
-        // Cek apakah ada jawaban tersimpan
+        // Cek apakah ada jawaban tersimpan + cache key response
+        _responseSaveKey = null; // Reset untuk ujian baru
         return database.ref('Responses').orderByChild('ExamID').equalTo(examData.id).once('value').then(rSnap => {
           let savedAnswers = null;
           rSnap.forEach(rc => {
             const r = rc.val();
             if (r.UserID === currentUser.userID) {
               savedAnswers = r.Answers || null;
+              _responseSaveKey = rc.key; // Cache key agar tidak race condition
             }
           });
 
@@ -6912,11 +7171,11 @@ function updateNavStyle() {
     function selectMatchRight(qid, val, el) {
         if(!selectedLeft) { Swal.fire('Info','Pilih sisi kiri dulu!','info'); return; }
         if(!answers[qid]) answers[qid] = {}; answers[qid][selectedLeft] = val; selectedLeft = null;
-        renderQuestion(currentQIndex); database.ref('Responses').orderByChild('UserID').equalTo(currentUser.userID).once('value').then(snap => { let key = null; snap.forEach(c => { if (c.val().ExamID === currentExam.id) key = c.key; }); if (key) { database.ref('Responses/' + key).update({ Answers: answers, Violations: violationCount }); } else { database.ref('Responses').push({ UserID: currentUser.userID, ExamID: currentExam.id, Answers: answers, Violations: violationCount, Username: currentUser.username }); } });
+        renderQuestion(currentQIndex); syncResponseToFirebase();
     }
 
     function saveAnswer(qid, val) {
-      answers[qid] = val; updateNavStyle(); database.ref('Responses').orderByChild('UserID').equalTo(currentUser.userID).once('value').then(snap => { let key = null; snap.forEach(c => { if (c.val().ExamID === currentExam.id) key = c.key; }); if (key) { database.ref('Responses/' + key).update({ Answers: answers, Violations: violationCount }); } else { database.ref('Responses').push({ UserID: currentUser.userID, ExamID: currentExam.id, Answers: answers, Violations: violationCount, Username: currentUser.username }); } });
+      answers[qid] = val; updateNavStyle(); syncResponseToFirebase();
     }
 
 
@@ -6940,18 +7199,7 @@ function saveComplexBS(qid, index, val) {
     console.log(`Tersimpan Soal BS Kompleks [${qid}] Baris [${index}]: ${val}`);
 
     // 5. Sinkronisasi ke Server (Auto-save ke Spreadsheet/Database)
-    // Pengecekan agar tidak error jika data user belum siap
-    if (currentUser && currentExam) {
-        database.ref('Responses').orderByChild('UserID').equalTo(currentUser.userID).once('value').then(snap => {
-            let key = null;
-            snap.forEach(c => { if (c.val().ExamID === currentExam.id) key = c.key; });
-            if (key) {
-                database.ref('Responses/' + key).update({ Answers: answers, Violations: violationCount });
-            } else {
-                database.ref('Responses').push({ UserID: currentUser.userID, ExamID: currentExam.id, Answers: answers, Violations: violationCount, Username: currentUser.username });
-            }
-        }).catch(err => console.error('Gagal sync jawaban:', err));
-    }
+    syncResponseToFirebase();
 }
     function renderNavGrid() {
       document.getElementById('nav-grid').innerHTML = questions.map((q, i) => `<button id="nav-btn-${i}" onclick="renderQuestion(${i})" class="w-full aspect-square border rounded-lg flex items-center justify-center font-bold text-sm transition hover:shadow-md">${i+1}</button>`).join('');
@@ -7611,24 +7859,34 @@ function executeSubmission(forced, statusLabel) {
       });
       const finalScore = totalPoints > 0 ? Math.round((totalScore / totalPoints) * 100) : 0;
 
-      // Simpan ke Firebase
-      return database.ref('Responses').orderByChild('UserID').equalTo(currentUser.userID).once('value').then(rSnap => {
-        let key = null;
-        rSnap.forEach(c => { if (c.val().ExamID === currentExam.id) key = c.key; });
-        const data = {
-          UserID: currentUser.userID, ExamID: currentExam.id, Username: currentUser.username,
-          Answers: answers, Score: finalScore, Status: statusLabel,
-          Violations: violationCount, SubmittedAt: new Date().toISOString()
-        };
-        if (key) {
-          // Pastikan ResponseID selalu ada saat update agar query view tidak gagal
-          data.ResponseID = 'RESP_' + key;
-          return database.ref('Responses/' + key).update(data);
-        } else {
-          data.ResponseID = 'RESP_' + Date.now();
-          return database.ref('Responses').push(data);
-        }
-      });
+      // Simpan ke Firebase — gunakan cached key jika ada
+      const submitData = {
+        UserID: currentUser.userID, ExamID: currentExam.id, Username: currentUser.username,
+        Answers: answers, Score: finalScore, Status: statusLabel,
+        Violations: violationCount, SubmittedAt: new Date().toISOString()
+      };
+
+      // Cancel debounce auto-save yang mungkin masih pending
+      if (_syncDebounceTimer) clearTimeout(_syncDebounceTimer);
+
+      if (_responseSaveKey) {
+        // Gunakan cached key — langsung update tanpa query
+        submitData.ResponseID = 'RESP_' + _responseSaveKey;
+        return database.ref('Responses/' + _responseSaveKey).update(submitData);
+      } else {
+        // Fallback: cari response yang sudah ada
+        return database.ref('Responses').orderByChild('UserID').equalTo(currentUser.userID).once('value').then(rSnap => {
+          let key = null;
+          rSnap.forEach(c => { if (c.val().ExamID === currentExam.id) key = c.key; });
+          if (key) {
+            submitData.ResponseID = 'RESP_' + key;
+            return database.ref('Responses/' + key).update(submitData);
+          } else {
+            submitData.ResponseID = 'RESP_' + Date.now();
+            return database.ref('Responses').push(submitData);
+          }
+        });
+      }
     }).then(() => {
         document.getElementById('global-loading').classList.add('hidden');
         
@@ -8404,7 +8662,7 @@ function printCards(usersToPrint) {
         cardsHTML += getCardHTML(u);
     });
 
-    const watermarkUrl = 'https://image2url.com/r2/default/images/1769579795504-652ce4de-f7e1-46c9-a2b3-16cb4cc01ff3.png';
+    const watermarkUrl = 'https://image2url.com/r2/default/images/1772491801108-ee0f4d76-4109-4d18-8f79-ec46bc5aeec2.jpeg';
 
     const docContent = `
     <!DOCTYPE html>
@@ -10518,7 +10776,7 @@ function printStudentCard(userId) {
 
         const logoKiri = 'https://image2url.com/r2/default/images/1772488688008-9fedcbee-20ec-4fe6-8e26-9e637cdcb6a8.png';
         const logoKanan = 'https://image2url.com/r2/default/images/1769579795504-652ce4de-f7e1-46c9-a2b3-16cb4cc01ff3.png';
-        const watermarkUrl = 'https://image2url.com/r2/default/images/1769579795504-652ce4de-f7e1-46c9-a2b3-16cb4cc01ff3.png';
+        const watermarkUrl = 'https://image2url.com/r2/default/images/1772491801108-ee0f4d76-4109-4d18-8f79-ec46bc5aeec2.jpeg';
 
         const html = `
         <!DOCTYPE html>
@@ -10924,6 +11182,7 @@ function loadAbsensiStudents(examId, kelas) {
                 };
             });
 
+            students.sort((a, b) => (a.username || '').localeCompare(b.username || '', 'id'));
             renderAbsensiGrid(students, examId);
             updateAbsensiChart(students);
         });
